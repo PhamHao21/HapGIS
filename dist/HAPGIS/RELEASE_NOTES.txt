@@ -1,0 +1,9 @@
+HAPGIS v1.0.0 - RELEASE NOTES
+
+- Core đánh số nhà: bản 1.0.0 từ thuật toán đã regression-test.
+- GUI: thêm branding HAPGIS v1.0.0 và icon ứng dụng.
+- EXE: cấu hình metadata Windows (Product name / Version / Description).
+- Đầu ra khuyến nghị: GeoPackage (.gpkg).
+- Lưu ý: vòng xuyến / vòng xoay và đường cong rẻ nhánh nhiều vẫn chưa được kiểm thử đầy đủ.
+
+*Không thay đổi thuật toán GIS trong gói branding này.*

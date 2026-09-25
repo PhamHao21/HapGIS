@@ -1,0 +1,28 @@
+# Python virtual environment
+.venv/
+venv/
+ENV/
+
+# PyInstaller / Build artifacts
+build/
+*.manifest
+*.spec.log
+
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local backup directory
+backup/
+
+# Cấu hình IDE / Editor
+.vscode/
+.idea/
+
+# File tạm hệ thống
+Thumbs.db
+Desktop.ini
+
+# (Tùy chọn) Bỏ qua folder chứa file .exe nếu dùng GitHub Releases
+# dist/
