@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """
-HAPGIS Core 1.0
+HAPGIS Core 1.1
 ---------------
 Thuật toán đánh số nhà tự động trên dữ liệu GIS.
 
@@ -19,16 +19,18 @@ Lưu ý:
 """
 
 CORE_NAME = "HAPGIS"
-CORE_VERSION = "1.0.0"
+CORE_VERSION = "1.1"
 
+import heapq
 import math
 import os
 
 import pandas as pd
 import geopandas as gpd
 
+import shapely
 from shapely.geometry import Point, LineString
-from shapely.ops import nearest_points
+from shapely.ops import linemerge, nearest_points
 
 # ============================================================
 # CAU HINH
@@ -49,8 +51,9 @@ DEBUG_ACCESS_SHP = r"D:\thorw\Documents\GIS\Output\PhongDien_diem_tiep_can_v13_5
 # Co the nhap nhieu tuyen, cach nhau bang dau ;
 TUYEN = "Đường số 5"
 
-FIELD_HOUSE_ROAD = "tenDuong"
-FIELD_ROAD_NAME = "tenDuong"
+FIELD_ROUTE = "tenDuong"
+FIELD_HOUSE_ROAD = FIELD_ROUTE
+FIELD_ROAD_NAME = FIELD_ROUTE
 
 # 4 field output chinh
 COL_BEN = "traiPhai"
@@ -75,7 +78,7 @@ def doc_lop(path, layer=None):
         if not layer:
             raise ValueError(f"Du lieu GDB can khai bao layer: {path}")
         return gpd.read_file(path, layer=layer)
-    return gpd.read_file(path)
+    return gpd.read_file(path, **({"layer": layer} if layer else {}))
 
 
 def khoa_ten(v):
@@ -87,22 +90,32 @@ def khoa_ten(v):
 
 def kiem_tra_he_toa_do(houses, roads):
     if houses.crs is None or roads.crs is None:
-        raise ValueError("Thieu CRS o lop thua hoac lop duong.")
+        raise ValueError("Thiếu CRS ở lớp thửa hoặc lớp đường.")
 
     if houses.crs != roads.crs:
         raise ValueError(
-            "Hai lop dang khac CRS. Hay dung Project trong ArcGIS Pro "
-            "de dua hai lop ve cung he toa do truoc."
+            "Hai lớp đang khác CRS. Hãy dùng Project/Reproject "
+            "để đưa hai lớp về cùng hệ tọa độ trước."
         )
 
     try:
         if not houses.crs.is_projected:
             raise ValueError(
-                "CRS hien tai khong phai he toa do phang. "
-                "Can Project sang VN-2000 projected don vi met truoc khi chay."
+                "CRS hiện tại không phải hệ tọa độ phẳng (projected). "
+                "Cần chuyển sang hệ tọa độ phẳng đơn vị mét trước khi chạy."
             )
     except AttributeError:
         pass
+
+    axes = houses.crs.axis_info[:2]
+    if len(axes) != 2 or any(
+        not math.isclose(axis.unit_conversion_factor, 1.0, rel_tol=0, abs_tol=1e-12)
+        for axis in axes
+    ):
+        raise ValueError(
+            "Hai lớp phải dùng đơn vị mét (meter/metre), không phải feet hay độ. "
+            "Hãy Project/Reproject dữ liệu sang hệ tọa độ phẳng đơn vị mét."
+        )
 
 
 def xoa_shapefile_cu(path):
@@ -439,6 +452,123 @@ def truc_cong_tu_polygon(poly, so_mau=120):
     if line.is_empty or line.geom_type != "LineString" or line.length == 0:
         return None
 
+    # Mat cat vuong goc 1 truc MRR chi di het duong "gan thang".
+    # Duong chu L: neu truc MRR trung 1 canh L thi mat cat chay doc canh kia,
+    # line bo sot ca 1 canh -> lech TRAI/PHAI. Khi line phu kem, thu truc xuong.
+    khong_phu = ty_le_khong_phu_truc(poly, line)
+
+    if khong_phu > NGUONG_TRUC_KHONG_PHU:
+        try:
+            xuong = truc_xuong_tu_polygon(poly)
+        except Exception:
+            xuong = None
+
+        # chuan_hoa_chieu_line dinh chieu theo 2 dau mut: chi nhan truc xuong
+        # di tien doc day cung (L: co; moc/U: khong -> giu line cu, tranh lat ben).
+        if (
+            xuong is not None
+            and ty_le_khong_phu_truc(poly, xuong) <= khong_phu * 0.5
+            and do_lui_doc_day_cung(xuong) <= uoc_luong_be_rong_duong(poly)
+        ):
+            return xuong
+
+    return line
+
+
+# Ty le dien tich polygon nam ngoai vung 1.5 x be rong quanh reference line.
+NGUONG_TRUC_KHONG_PHU = 0.10
+
+
+def ty_le_khong_phu_truc(poly, line):
+    """Ty le dien tich polygon road ma reference line khong di qua."""
+    if line is None or line.is_empty or poly.area <= 0:
+        return 1.0
+
+    w = uoc_luong_be_rong_duong(poly)
+
+    return float(poly.difference(line.buffer(1.5 * w)).area / poly.area)
+
+
+def do_lui_doc_day_cung(line):
+    """Tong chieu dai line di NGUOC huong day cung (dau mut dau -> dau mut cuoi)."""
+    cs = list(line.coords)
+    dx = cs[-1][0] - cs[0][0]
+    dy = cs[-1][1] - cs[0][1]
+    L = math.hypot(dx, dy)
+
+    if L <= 1e-9:
+        return float(line.length)
+
+    ux, uy = dx / L, dy / L
+
+    return sum(
+        max(0.0, -((b[0] - a[0]) * ux + (b[1] - a[1]) * uy))
+        for a, b in zip(cs[:-1], cs[1:])
+    )
+
+
+def truc_xuong_tu_polygon(poly):
+    """
+    Polygon -> reference line theo truc xuong (medial axis xap xi):
+    Voronoi cua diem day tren bien -> giu canh nam trong polygon
+    -> duong di dai nhat tren do thi. Khong phu thuoc goc xoay.
+    """
+    w = uoc_luong_be_rong_duong(poly)
+    dense = shapely.segmentize(poly, max(w / 3.0, poly.length / 4000.0))
+    pts = shapely.multipoints(shapely.get_coordinates(dense.boundary))
+    edges = shapely.get_parts(shapely.voronoi_polygons(pts, only_edges=True))
+
+    adj = {}
+
+    for e in edges:
+        if not dense.contains(e):
+            continue
+
+        a, b = (tuple(round(v, 6) for v in c) for c in e.coords)
+        d = math.dist(a, b)
+        adj.setdefault(a, []).append((b, d))
+        adj.setdefault(b, []).append((a, d))
+
+    if not adj:
+        return None
+
+    def xa_nhat(goc):
+        dist = {goc: 0.0}
+        par = {goc: None}
+        heap = [(0.0, goc)]
+
+        while heap:
+            d, u = heapq.heappop(heap)
+
+            if d > dist[u]:
+                continue
+
+            for v, w_uv in adj[u]:
+                if d + w_uv < dist.get(v, math.inf):
+                    dist[v] = d + w_uv
+                    par[v] = u
+                    heapq.heappush(heap, (d + w_uv, v))
+
+        return max(dist, key=dist.get), par
+
+    a, _ = xa_nhat(next(iter(adj)))
+    b, par = xa_nhat(a)
+
+    path = []
+
+    while b is not None:
+        path.append(b)
+        b = par[b]
+
+    if len(path) < 2:
+        return None
+
+    line = LineString(path)
+    line = line.simplify(max(line.length * 0.001, 0.01), preserve_topology=False)
+
+    if line.is_empty or line.geom_type != "LineString" or line.length == 0:
+        return None
+
     return line
 
 
@@ -451,14 +581,32 @@ def gan_thua_vao_manh(polys, group):
     """
     Moi thua chi gan vao 1 polygon road gan nhat.
 
-    Pha hoa:
-    1. khoang cach tu CA geometry thua den polygon;
-    2. khoang cach representative point den polygon;
-    3. chi so polygon.
+    Thua tiep giap duy nhat 1 manh -> gan vao manh do.
+
+    Thua tiep giap >= 2 manh (vd. thua kep giua duong chinh va hem nho
+    cung tenDuong, hai dau thua deu cham polygon road) khong duoc chon theo
+    khoang cach: hai khoang cach bang nhau va representative point cung
+    cach deu, ket qua phu thuoc sai so so hoc nen day thua bi tach doi
+    giua hai manh (chan/le xen ke). Cac thua nay duoc gan CHUNG vao manh
+    co nhieu thua tiep giap ro rang nhat.
     """
-    gan_manh = {}
-    thua_theo_manh = {i: [] for i in range(len(polys))}
-    dem_thua = [0] * len(polys)
+    nguong_cham = 0.05
+
+    def khoang_cach(geom, p_rep):
+        d_geom, d_rep = [], []
+        for poly in polys:
+            try:
+                d_geom.append(float(geom.distance(poly)))
+            except Exception:
+                d_geom.append(float("inf"))
+            try:
+                d_rep.append(float(p_rep.distance(poly)))
+            except Exception:
+                d_rep.append(float("inf"))
+        return d_geom, d_rep
+
+    thong_tin = {}
+    dem_ro_rang = [0] * len(polys)
 
     for idx, geom in zip(group.index, group.geometry):
         if geom is None or geom.is_empty:
@@ -469,22 +617,33 @@ def gan_thua_vao_manh(polys, group):
         except Exception:
             p_rep = geom.centroid
 
-        ung_vien = []
+        d_geom, d_rep = khoang_cach(geom, p_rep)
+        ung_vien = [i for i, d in enumerate(d_geom) if d <= nguong_cham]
+        if not ung_vien:
+            # Only actual/near contacts share the dominant-piece rule. A
+            # detached parcel still belongs to its nearest road component.
+            ung_vien = [min(range(len(polys)), key=lambda k: (d_geom[k], d_rep[k], k))]
 
-        for i, poly in enumerate(polys):
-            try:
-                d_geom = float(geom.distance(poly))
-            except Exception:
-                d_geom = float("inf")
+        if len(ung_vien) == 1:
+            dem_ro_rang[ung_vien[0]] += 1
 
-            try:
-                d_rep = float(p_rep.distance(poly))
-            except Exception:
-                d_rep = float("inf")
+        thong_tin[idx] = (ung_vien, d_geom, d_rep)
 
-            ung_vien.append((d_geom, d_rep, i))
+    gan_manh = {}
+    thua_theo_manh = {i: [] for i in range(len(polys))}
+    dem_thua = [0] * len(polys)
 
-        _, _, i = min(ung_vien, key=lambda z: (z[0], z[1], z[2]))
+    for idx, (ung_vien, d_geom, d_rep) in thong_tin.items():
+        i = min(
+            ung_vien,
+            key=lambda k: (
+                -dem_ro_rang[k],
+                -float(polys[k].area),
+                d_geom[k],
+                d_rep[k],
+                k,
+            ),
+        )
 
         gan_manh[idx] = i
         dem_thua[i] += 1
@@ -1441,6 +1600,37 @@ def vi_tri_diem_tren_bien_duong(poly, p_road):
     return float(s), float(L), int(ma_vong)
 
 
+def vi_tri_lech_phu_tren_bien(poly, ma_vong, geom, vi_tri_bien, chu_vi_vong):
+    """
+    Do lech (m, co dau) doc bien duong cua THAN thua so voi diem mat duong.
+
+    Hai thua ke nhau co the cung cham 1 dinh cua bien duong (p_road trung
+    nhau, vi_tri_bien bang nhau). Khi do thu tu chi con lai id nen bi dao
+    ngau nhien; do lech nay dung lam khoa phu phan biet chung.
+    """
+    try:
+        rings = [poly.exterior] + list(poly.interiors)
+        ring = LineString(rings[ma_vong].coords)
+        s2 = float(ring.project(geom.centroid))
+    except Exception:
+        return 0.0
+
+    if not chu_vi_vong or chu_vi_vong <= 0:
+        return 0.0
+
+    return ((s2 - vi_tri_bien + chu_vi_vong / 2.0) % chu_vi_vong) - chu_vi_vong / 2.0
+
+
+def _score_thu_tu_frontage(row, huong):
+    """Use the ordering frontage point without moving the side-classification point."""
+    score = row.get("_scoreThuTu")
+    if score is not None and not pd.isna(score):
+        return float(score)
+    return float(
+        diem_so_huong(Point(float(row["_xMatDuong"]), float(row["_yMatDuong"])), huong)
+    )
+
+
 def _sap_xep_vong_bien(sub, huong):
     """
     Sap thua tren CUNG polygon component + CUNG ring boundary.
@@ -1468,6 +1658,8 @@ def _sap_xep_vong_bien(sub, huong):
         L = row.get("_chuViBien")
         x = row.get("_xMatDuong")
         y = row.get("_yMatDuong")
+        s_phu = row.get("_lechBien")
+        s_phu = 0.0 if s_phu is None or pd.isna(s_phu) else float(s_phu)
 
         if pd.isna(s) or pd.isna(L) or pd.isna(x) or pd.isna(y):
             continue
@@ -1476,13 +1668,9 @@ def _sap_xep_vong_bien(sub, huong):
             {
                 "idx": idx,
                 "s": float(s),
+                "sPhu": s_phu,
                 "L": float(L),
-                "score": float(
-                    diem_so_huong(
-                        Point(float(x), float(y)),
-                        huong,
-                    )
-                ),
+                "score": _score_thu_tu_frontage(row, huong),
             }
         )
 
@@ -1512,7 +1700,7 @@ def _sap_xep_vong_bien(sub, huong):
             "daoChieu": False,
         }
 
-    rows.sort(key=lambda r: (r["s"], r["idx"]))
+    rows.sort(key=lambda r: (round(r["s"], 3), r["sPhu"], r["idx"]))
 
     # Tim gap giua s[i] -> s[i+1], ke ca wrap last -> first+L.
     gaps = []
@@ -1534,9 +1722,23 @@ def _sap_xep_vong_bien(sub, huong):
     ordered_rows = rows[bat_dau:] + rows[:bat_dau]
 
     # Chon chieu toan day. Dung median 1..3 diem dau/cuoi de tranh 1 diem le.
-    k = min(3, len(ordered_rows))
+    # k <= n//2 de nhom dau/cuoi khong trung nhau; voi n <= 3 neu k = n thi
+    # hai median bang nhau va khong bao gio dao chieu.
+    k = min(3, max(1, len(ordered_rows) // 2))
     score_dau = _trung_vi_so(r["score"] for r in ordered_rows[:k])
     score_cuoi = _trung_vi_so(r["score"] for r in ordered_rows[-k:])
+
+    if math.isclose(score_dau, score_cuoi, rel_tol=0, abs_tol=1e-7):
+        # Two parcels can share exactly the same access vertex. The offset
+        # sorts along the ring but cannot choose the route direction by itself.
+        def body_score(item):
+            geom = sub.loc[item["idx"], "geometry"]
+            if geom is None or geom.is_empty:
+                return item["score"]
+            return diem_so_huong(geom.representative_point(), huong)
+
+        score_dau = _trung_vi_so(body_score(r) for r in ordered_rows[:k])
+        score_cuoi = _trung_vi_so(body_score(r) for r in ordered_rows[-k:])
 
     dao = False
 
@@ -1600,15 +1802,7 @@ def thu_tu_thua_theo_bien_duong(nhom, huong):
         score_theo_idx = {}
 
         for idx, row in sub.iterrows():
-            score_theo_idx[idx] = float(
-                diem_so_huong(
-                    Point(
-                        float(row["_xMatDuong"]),
-                        float(row["_yMatDuong"]),
-                    ),
-                    huong,
-                )
-            )
+            score_theo_idx[idx] = _score_thu_tu_frontage(row, huong)
 
         idx_hop_le = [idx for idx in idx_order if idx in score_theo_idx]
 
@@ -1755,6 +1949,55 @@ def _tangent_reference_tai_diem(line, p):
         return tangent_cuc_bo_on_dinh(line, m)
     except Exception:
         return 0.0, 0.0
+
+
+MAT_TIEN_DAI_MIN = 30.0
+MAT_TIEN_DAI_THANG_MIN = 0.85
+
+
+def diem_giua_mat_tien_dai(geom, poly):
+    """
+    Diem giua doan mat tien THANG va DAI (>= MAT_TIEN_DAI_MIN m) cua thua.
+
+    Thua lon sat bien duong co moi diem doc mat tien deu cach 0 nen p_road
+    chon theo "canh dau tien" la ngau nhien: co the trung vi tri voi thua
+    nho ke ben va dung sai cho trong day so. Diem giua chi dung de tinh VI TRI
+    THU TU tren bien duong; p_road/TRAI-PHAI/chi phi topology giu nguyen.
+
+    Doan cong gap khuc (thua goc ngoai, do thang < MAT_TIEN_DAI_THANG_MIN)
+    khong ap dung vi diem giua nam o goc.
+    Tra ve Point tren bien duong hoac None.
+    """
+    try:
+        if geom is None or geom.is_empty or geom.geom_type == "Point":
+            return None
+
+        chung = geom.boundary.intersection(poly.boundary.buffer(0.3))
+        cac_doan = lay_cac_line(chung)
+
+        if not cac_doan:
+            return None
+
+        gop = lay_cac_line(linemerge(cac_doan))
+
+        if not gop:
+            return None
+
+        dai_nhat = max(gop, key=lambda g: g.length)
+
+        if dai_nhat.length < MAT_TIEN_DAI_MIN:
+            return None
+
+        a, b = dai_nhat.coords[0], dai_nhat.coords[-1]
+
+        if math.dist(a, b) < MAT_TIEN_DAI_THANG_MIN * dai_nhat.length:
+            return None
+
+        p_giua = dai_nhat.interpolate(0.5, normalized=True)
+        _, p_road = nearest_points(p_giua, poly.boundary)
+        return p_road
+    except Exception:
+        return None
 
 
 def lay_diem_mat_tien(geom, poly, line=None):
@@ -3554,25 +3797,430 @@ def hau_kiem_thu_tu_theo_tiep_giap(
     return ordered, blocks
 
 
-def process(houses, roads, verbose=True):
-    if FIELD_HOUSE_ROAD not in houses.columns:
-        raise ValueError(f"Lop thua khong co field '{FIELD_HOUSE_ROAD}'.")
+# ============================================================
+# TIM DUONG (CENTERLINE) - CHI DUONG CHINH
+# ============================================================
 
-    if FIELD_ROAD_NAME not in roads.columns:
-        raise ValueError(f"Lop duong khong co field '{FIELD_ROAD_NAME}'.")
+LOAI_POLYGON = ("Polygon", "MultiPolygon")
+LOAI_TIM = ("LineString", "MultiLineString")
+KIEU_POLYGON = "polygon"
+KIEU_TIM = "tim"
+KIEU_LAN = "lan"
+
+# Dau mut hai doan tim cung tuyen lech <= nguong nay (m) duoc coi la noi nhau.
+TIM_DUNG_SAI_NOI_M = 0.10
+# Phan bien thua cach tim <= khoang cach gan nhat + nguong nay (m) la mat tien.
+MAT_TIEN_TIM_BAND_M = 0.5
+
+
+def kieu_hinh_hoc_tuyen(geometries):
+    """KIEU_POLYGON / KIEU_TIM / KIEU_LAN (lan kieu, hoac kieu khac) / None (rong)."""
+    types = {g.geom_type for g in geometries if g is not None and not g.is_empty}
+    if not types:
+        return None
+    if types <= set(LOAI_POLYGON):
+        return KIEU_POLYGON
+    if types <= set(LOAI_TIM):
+        return KIEU_TIM
+    return KIEU_LAN
+
+
+def phan_tich_tim_duong(geometries, dung_sai=TIM_DUNG_SAI_NOI_M):
+    """
+    Noi cac doan tim cua 1 tuyen thanh cac LineString lien thong.
+
+    Tra ve dict:
+        lines : list LineString sau khi noi (moi phan tu = 1 manh)
+        nhanh : so nut co >= 3 doan gap nhau
+        vong  : so manh khep kin
+    """
+    parts = [
+        part
+        for g in geometries
+        if g is not None and not g.is_empty and g.geom_type in LOAI_TIM
+        for part in shapely.get_parts(g)
+        if part.length > 0
+    ]
+
+    # Gom dau mut gan nhau ve 1 diem dai dien de line_merge noi duoc.
+    dai_dien = []
+
+    def bat_dinh(xy):
+        for q in dai_dien:
+            if math.dist(q, xy) <= dung_sai:
+                return q
+        dai_dien.append(xy)
+        return xy
+
+    snapped = []
+    for part in parts:
+        coords = list(part.coords)
+        coords[0] = bat_dinh(coords[0])
+        coords[-1] = bat_dinh(coords[-1])
+        if len(coords) >= 2 and LineString(coords).length > 0:
+            snapped.append(LineString(coords))
+
+    if not snapped:
+        return dict(lines=[], nhanh=0, vong=0)
+
+    merged = shapely.line_merge(shapely.union_all(snapped))
+    lines = [line for line in shapely.get_parts(merged) if line.length > 0]
+
+    bac = {}
+    for line in lines:
+        if line.is_closed:
+            continue
+        for xy in (line.coords[0], line.coords[-1]):
+            key = (round(xy[0], 6), round(xy[1], 6))
+            bac[key] = bac.get(key, 0) + 1
+
+    return dict(
+        lines=lines,
+        nhanh=sum(1 for n in bac.values() if n >= 3),
+        vong=sum(1 for line in lines if line.is_closed),
+    )
+
+
+def do_thua_theo_tim(geom, line, huong):
+    """
+    Do 1 thua so voi tim duong da dinh huong.
+
+    Ghi ra dung cac cot ma che do polygon dung de sap thu tu:
+    - diem mat duong (_xMatDuong) = diem cua thua gan tim nhat, tuong duong
+      diem tiep giap mep duong o che do polygon;
+    - _viTriBien = chainage giua mat tien tren tim, _chuViBien = inf
+      (chuoi ho: _sap_xep_vong_bien cat tai khe wrap nen thu tu tuyen tinh).
+    """
+    p, p_tim = nearest_points(geom, line)
+    m_tim = float(line.project(p_tim))
+
+    # Mat tien = phan bien thua gan tim nhat.
+    d_min = float(geom.distance(line))
+    try:
+        mat_tien = geom.boundary.intersection(
+            line.buffer(d_min + MAT_TIEN_TIM_BAND_M)
+        )
+        cac_doan = lay_cac_line(mat_tien)
+    except Exception:
+        cac_doan = []
+
+    diem_giua = p
+    do_song_song = 1.0
+
+    if cac_doan:
+        gop = shapely.MultiLineString(cac_doan)
+        diem_giua = gop.centroid
+        if diem_giua.is_empty:
+            diem_giua = p
+        dai_nhat = max(cac_doan, key=lambda g: g.length)
+        a, b = dai_nhat.coords[0], dai_nhat.coords[-1]
+        tx, ty = tangent_cuc_bo_on_dinh(line, m_tim)
+        if math.dist(a, b) > 1e-9:
+            do_song_song = _cos_song_song(b[0] - a[0], b[1] - a[1], tx, ty)
+
+    m_giua = float(line.project(diem_giua))
+    vi_tri_bien = vi_tri_sap_xep_endpoint(line, diem_giua, m_giua)
+    m_sap = vi_tri_sap_xep_endpoint(line, p, m_tim)
+
+    dx, dy = tangent_cuc_bo_on_dinh(line, m_tim)
+
+    try:
+        side_probe = geom.representative_point()
+    except Exception:
+        side_probe = geom.centroid
+
+    wx = side_probe.x - p_tim.x
+    wy = side_probe.y - p_tim.y
+    cross = dx * wy - dy * wx
+
+    norm_t = math.hypot(dx, dy)
+    norm_w = math.hypot(wx, wy)
+    if norm_t > 1e-12 and norm_w > 1e-12:
+        tin_cay_ben = min(1.0, abs(cross) / (norm_t * norm_w))
+    else:
+        tin_cay_ben = 0.0
+    tin_cay_ben *= 0.55 + 0.45 * max(0.0, min(1.0, float(do_song_song)))
+
+    side = GT_TRAI if cross > 0 else GT_PHAI
+
+    try:
+        lech_bien = float(line.project(geom.centroid)) - m_giua
+    except Exception:
+        lech_bien = 0.0
+
+    return dict(
+        side=side,
+        measure=m_sap,
+        dist=d_min,
+        x=float(p.x),
+        y=float(p.y),
+        vi_tri_bien=float(vi_tri_bien),
+        lech_bien=lech_bien,
+        score=diem_so_huong(diem_giua, huong),
+        chu_vi_bien=float("inf"),
+        vong_bien=0,
+        song_song=float(do_song_song),
+        canh_mat_tien=-1,
+        cach_mat_tien="TIM_DUONG",
+        tin_cay_ben=float(tin_cay_ben),
+        cach_chieu="TIM_DUONG",
+        doan_tham=-1,
+    )
+
+
+# Gia tri do cua thua khong gan duoc vao manh co reference line.
+DO_THUA_LOI = dict(
+    side=None, manh=None, measure=float("nan"), dist=float("nan"),
+    x=float("nan"), y=float("nan"), vi_tri_bien=float("nan"), lech_bien=0.0,
+    score=float("nan"), chu_vi_bien=float("nan"), vong_bien=-1, song_song=0.0,
+    canh_mat_tien=-1, cach_mat_tien="LOI", tin_cay_ben=0.0, cach_chieu="LOI",
+    doan_tham=-1,
+)
+
+# Cot noi bo cua group <- khoa trong dict do thua.
+COT_DO_THUA = {
+    COL_BEN: "side",
+    "_manhDuong": "manh",
+    "_measure": "measure",
+    "_dist_line": "dist",
+    "_xMatDuong": "x",
+    "_yMatDuong": "y",
+    "_viTriBien": "vi_tri_bien",
+    "_lechBien": "lech_bien",
+    "_scoreThuTu": "score",
+    "_chuViBien": "chu_vi_bien",
+    "_vongBien": "vong_bien",
+    "_songSong": "song_song",
+    "_canhMatTien": "canh_mat_tien",
+    "_cachMatTien": "cach_mat_tien",
+    "_tinCayBen": "tin_cay_ben",
+    "_cachChieu": "cach_chieu",
+    "_doanTham": "doan_tham",
+}
+
+
+def do_thua_theo_polygon(geom, poly, line, huong):
+    """
+    Do 1 thua so voi 1 manh polygon road va reference line cua manh do:
+    diem mat tien tren bien road, ben TRAI/PHAI, chainage tren vong bien.
+    """
+    # MAT TIEN phai nam tren CANH DOC TUYEN,
+    # tranh bat nham end-cap/canh ngang tai giao lo.
+    (
+        p,
+        p_road,
+        do_song_song,
+        canh_mat_tien,
+        cach_mat_tien,
+    ) = lay_diem_mat_tien(
+        geom,
+        poly,
+        line=line,
+    )
+
+    if p is None or p.is_empty:
+        try:
+            p = geom.representative_point()
+        except Exception:
+            p = geom.centroid
+
+    if p_road is None or p_road.is_empty:
+        try:
+            _, p_road = nearest_points(
+                p,
+                poly.boundary,
+            )
+        except Exception:
+            p_road = p
+
+    # V3: khong dung line.project(p) truc tiep o khuc cua gap.
+    # Chieu p_road vao segment co "loi di" nam trong polygon road.
+    m_thuc, proj_point, cach_chieu, chi_so_seg = (
+        chieu_diem_vao_line_theo_long_duong(
+            line,
+            poly,
+            p_road,
+        )
+    )
+
+    if m_thuc is None or proj_point is None:
+        m_thuc = float(line.project(p))
+        proj_point = line.interpolate(m_thuc)
+        cach_chieu = "PROJECT"
+        chi_so_seg = -1
+
+    # Chi de SAP THU TU khi bi kep endpoint.
+    # Dung diem thua p de giu thong tin vi tri doc mat tien khi nam qua endpoint.
+    m_sap = vi_tri_sap_xep_endpoint(
+        line,
+        p,
+        m_thuc,
+    )
+
+    # Tangent reference line chi dung de dinh CHIEU tangent bien road.
+    dx_ref, dy_ref = tangent_cuc_bo_on_dinh(
+        line,
+        m_thuc,
+    )
+
+    # Nguyen tac:
+    # - tangent boundary tot khi p_road nam tren canh doc tuyen;
+    # - neu tangent boundary lech qua nhieu voi reference tangent,
+    #   dung reference tangent de tranh lat TRAI/PHAI o end-cap/giao lo.
+    dx_bien, dy_bien = tangent_bien_duong(
+        poly,
+        p_road,
+        tangent_tham_chieu=(dx_ref, dy_ref),
+    )
+
+    song_song_tangent = _cos_song_song(
+        dx_bien,
+        dy_bien,
+        dx_ref,
+        dy_ref,
+    )
+
+    if song_song_tangent >= 0.55:
+        dx, dy = dx_bien, dy_bien
+    else:
+        dx, dy = dx_ref, dy_ref
+
+    try:
+        side_probe = geom.representative_point()
+    except Exception:
+        side_probe = geom.centroid
+
+    wx = side_probe.x - p_road.x
+    wy = side_probe.y - p_road.y
+
+    if math.hypot(wx, wy) <= 1e-9:
+        cp = geom.centroid
+        wx = cp.x - p_road.x
+        wy = cp.y - p_road.y
+
+    cross = dx * wy - dy * wx
+
+    # Tin cay side = |sin(goc)| giua tangent va vector vao thua,
+    # ket hop chat luong frontage.
+    norm_t = math.hypot(dx, dy)
+    norm_w = math.hypot(wx, wy)
+
+    if norm_t > 1e-12 and norm_w > 1e-12:
+        tin_cay_ben = min(
+            1.0,
+            abs(cross) / (norm_t * norm_w),
+        )
+    else:
+        tin_cay_ben = 0.0
+
+    tin_cay_ben *= 0.55 + 0.45 * max(
+        0.0,
+        min(1.0, float(do_song_song)),
+    )
+
+    if cach_mat_tien != "DOC_TUYEN":
+        tin_cay_ben *= 0.75
+
+    if cross > 0:
+        side = GT_TRAI
+
+    elif cross < 0:
+        side = GT_PHAI
+
+    else:
+        cp = geom.centroid
+
+        wx2 = cp.x - p_road.x
+        wy2 = cp.y - p_road.y
+
+        cross2 = dx * wy2 - dy * wx2
+
+        side = GT_TRAI if cross2 > 0 else GT_PHAI
+
+    kc = float(p_road.distance(proj_point))
+
+    # Vi tri MAT DUONG tren boundary polygon la khoa thu tu chinh.
+    vi_tri_bien, chu_vi_bien, vong_bien = vi_tri_diem_tren_bien_duong(
+        poly,
+        p_road,
+    )
+
+    # Thua co mat tien dai: vi tri thu tu lay o GIUA mat tien.
+    p_giua = diem_giua_mat_tien_dai(geom, poly)
+
+    if p_giua is not None:
+        vi_tri_bien, chu_vi_bien, vong_bien = vi_tri_diem_tren_bien_duong(
+            poly,
+            p_giua,
+        )
+
+    return dict(
+        side=side,
+        measure=m_sap,
+        dist=kc,
+        x=float(p_road.x),
+        y=float(p_road.y),
+        vi_tri_bien=vi_tri_bien,
+        lech_bien=vi_tri_lech_phu_tren_bien(
+            poly,
+            vong_bien,
+            geom,
+            vi_tri_bien,
+            chu_vi_bien,
+        ),
+        score=diem_so_huong(p_giua if p_giua is not None else p_road, huong),
+        chu_vi_bien=chu_vi_bien,
+        vong_bien=vong_bien,
+        song_song=float(do_song_song),
+        canh_mat_tien=int(canh_mat_tien),
+        cach_mat_tien=cach_mat_tien,
+        tin_cay_ben=float(tin_cay_ben),
+        cach_chieu=cach_chieu,
+        doan_tham=int(chi_so_seg),
+    )
+
+
+def process(houses, roads, verbose=True, reference_roads=None, alley_contexts=None):
+    from route_catalog import (
+        FIELD_ALLEY, route_key_series, route_label, validate_route_schema,
+    )
+    hierarchical = validate_route_schema(houses, roads)
 
     houses = houses.copy()
     roads = roads.copy()
 
     kiem_tra_he_toa_do(houses, roads)
 
+    from alley_numbering import prepare_alleys, number_alley, format_house_numbers
+
+    if alley_contexts is None:
+        reference_roads = roads if reference_roads is None else reference_roads
+        kiem_tra_he_toa_do(houses, reference_roads)
+        reference_hierarchical = validate_route_schema(houses, reference_roads)
+        if reference_hierarchical != hierarchical:
+            raise ValueError("Schema tenHem của dữ liệu chạy và dữ liệu tham chiếu không đồng nhất.")
+        candidate_house_keys = route_key_series(houses, hierarchical)
+        candidate_road_keys = set(route_key_series(roads, hierarchical))
+        names = list(dict.fromkeys(key for key in candidate_house_keys if key in candidate_road_keys))
+        alley_contexts, _, errors = prepare_alleys(names, reference_roads, hierarchical)
+        if errors:
+            raise ValueError("\n".join(errors))
+
+    house_keys = route_key_series(houses, hierarchical)
+    road_keys = route_key_series(roads, hierarchical)
+    route_names = {}
+    alley_values = houses[FIELD_ALLEY] if hierarchical else [""] * len(houses)
+    for key, parent, alley in zip(house_keys, houses[FIELD_ROUTE], alley_values):
+        if key != ("", ""):
+            route_names.setdefault(key, route_label(parent, alley))
+
     houses[COL_BEN] = None
     houses[COL_STT] = None
     houses[COL_SONHA] = None
     houses[COL_HUONG] = None
 
-    houses["_khoa"] = houses[FIELD_HOUSE_ROAD].map(khoa_ten)
-    roads["_khoa"] = roads[FIELD_ROAD_NAME].map(khoa_ten)
+    houses["_khoa"] = house_keys
+    roads["_khoa"] = road_keys
 
     results = []
     debug_lines = []
@@ -3581,18 +4229,16 @@ def process(houses, roads, verbose=True):
     for road_key, group in houses.groupby("_khoa", dropna=False):
         group = group.copy()
 
-        names = group[FIELD_HOUSE_ROAD].dropna().astype(str).unique().tolist()
-
-        road_name = names[0] if names else "(KHONG CO TEN DUONG)"
+        road_name = route_names.get(road_key, "(KHONG CO GIA TRI DOI CHIEU)")
 
         if verbose:
             print("\n" + "=" * 70)
             print("DANG XU LY:", road_name)
             print("So thua:", len(group))
 
-        if not road_key:
+        if road_key == ("", ""):
             if verbose:
-                print(">> Khong co tenDuong -> giu nguyen")
+                print(f">> Khong co gia tri {FIELD_ROUTE} -> giu nguyen")
             results.append(group)
             continue
 
@@ -3607,7 +4253,31 @@ def process(houses, roads, verbose=True):
             results.append(group)
             continue
 
-        polys = tach_polygon_components(road.geometry)
+        if road_key in alley_contexts:
+            results.append(number_alley(group, alley_contexts[road_key]))
+            continue
+
+        kieu = kieu_hinh_hoc_tuyen(road.geometry)
+
+        if kieu == KIEU_LAN:
+            if verbose:
+                print(">> Tuyen lan Polygon va LineString -> giu nguyen")
+            results.append(group)
+            continue
+
+        if kieu == KIEU_TIM:
+            tim = phan_tich_tim_duong(road.geometry)
+
+            if not tim["lines"] or tim["nhanh"] or tim["vong"]:
+                if verbose:
+                    print(">> Tim duong rong / phan nhanh / khep vong -> giu nguyen")
+                results.append(group)
+                continue
+
+            # Che do tim: moi "manh" la 1 tim lien thong, cung la reference line.
+            polys = tim["lines"]
+        else:
+            polys = tach_polygon_components(road.geometry)
 
         if not polys:
             if verbose:
@@ -3635,6 +4305,10 @@ def process(houses, roads, verbose=True):
         lines_theo_manh = {}
 
         for manh_idx in manh_co_thua:
+            if kieu == KIEU_TIM:
+                lines_theo_manh[manh_idx] = polys[manh_idx]
+                continue
+
             poly = polys[manh_idx]
 
             try:
@@ -3749,227 +4423,35 @@ def process(houses, roads, verbose=True):
         # ----------------------------------------------------
         # Tinh cho tung thua.
         # ----------------------------------------------------
-        side_list = []
-        manh_duong_list = []
-        measure_list = []
-        dist_list = []
-        x_mat_duong_list = []
-        y_mat_duong_list = []
-        vi_tri_bien_list = []
-        chu_vi_bien_list = []
-        vong_bien_list = []
-        song_song_list = []
-        canh_mat_tien_list = []
-        cach_mat_tien_list = []
-        tin_cay_ben_list = []
-        cach_chieu_list = []
-        doan_tham_list = []
-
-        dem_chieu_trong_duong = 0
-        dem_chieu_du_phong = 0
+        do_list = []
 
         for idx, geom in zip(group.index, group.geometry):
             manh_idx = gan_manh.get(idx)
 
             if manh_idx not in lines_theo_manh:
-                side_list.append(None)
-                manh_duong_list.append(None)
-                measure_list.append(float("nan"))
-                dist_list.append(float("nan"))
-                x_mat_duong_list.append(float("nan"))
-                y_mat_duong_list.append(float("nan"))
-                vi_tri_bien_list.append(float("nan"))
-                chu_vi_bien_list.append(float("nan"))
-                vong_bien_list.append(-1)
-                song_song_list.append(0.0)
-                canh_mat_tien_list.append(-1)
-                cach_mat_tien_list.append("LOI")
-                tin_cay_ben_list.append(0.0)
-                cach_chieu_list.append("LOI")
-                doan_tham_list.append(-1)
+                do_list.append(dict(DO_THUA_LOI))
                 continue
 
-            line = lines_theo_manh[manh_idx]
-            poly = polys[manh_idx]
-
-            # MAT TIEN phai nam tren CANH DOC TUYEN,
-            # tranh bat nham end-cap/canh ngang tai giao lo.
-            (
-                p,
-                p_road,
-                do_song_song,
-                canh_mat_tien,
-                cach_mat_tien,
-            ) = lay_diem_mat_tien(
-                geom,
-                poly,
-                line=line,
-            )
-
-            if p is None or p.is_empty:
-                try:
-                    p = geom.representative_point()
-                except Exception:
-                    p = geom.centroid
-
-            if p_road is None or p_road.is_empty:
-                try:
-                    _, p_road = nearest_points(
-                        p,
-                        poly.boundary,
-                    )
-                except Exception:
-                    p_road = p
-
-            # V3: khong dung line.project(p) truc tiep o khuc cua gap.
-            # Chieu p_road vao segment co "loi di" nam trong polygon road.
-            m_thuc, proj_point, cach_chieu, chi_so_seg = (
-                chieu_diem_vao_line_theo_long_duong(
-                    line,
-                    poly,
-                    p_road,
+            if kieu == KIEU_TIM:
+                do = do_thua_theo_tim(geom, lines_theo_manh[manh_idx], huong)
+            else:
+                do = do_thua_theo_polygon(
+                    geom,
+                    polys[manh_idx],
+                    lines_theo_manh[manh_idx],
+                    huong,
                 )
-            )
+            do["manh"] = int(manh_idx)
+            do_list.append(do)
 
-            if m_thuc is None or proj_point is None:
-                m_thuc = float(line.project(p))
-                proj_point = line.interpolate(m_thuc)
-                cach_chieu = "PROJECT"
-                chi_so_seg = -1
+        da_do = [do for do in do_list if do["manh"] is not None]
+        dem_chieu_trong_duong = sum(do["cach_chieu"] == "TRONG_DUONG" for do in da_do)
+        dem_chieu_du_phong = len(da_do) - dem_chieu_trong_duong
 
-            if cach_chieu == "TRONG_DUONG":
-                dem_chieu_trong_duong += 1
-            else:
-                dem_chieu_du_phong += 1
+        for cot, khoa in COT_DO_THUA.items():
+            group[cot] = [do[khoa] for do in do_list]
 
-            # Chi de SAP THU TU khi bi kep endpoint.
-            # Dung diem thua p de giu thong tin vi tri doc mat tien khi nam qua endpoint.
-            m_sap = vi_tri_sap_xep_endpoint(
-                line,
-                p,
-                m_thuc,
-            )
-
-            # Tangent reference line chi dung de dinh CHIEU tangent bien road.
-            dx_ref, dy_ref = tangent_cuc_bo_on_dinh(
-                line,
-                m_thuc,
-            )
-
-            # Nguyen tac:
-            # - tangent boundary tot khi p_road nam tren canh doc tuyen;
-            # - neu tangent boundary lech qua nhieu voi reference tangent,
-            #   dung reference tangent de tranh lat TRAI/PHAI o end-cap/giao lo.
-            dx_bien, dy_bien = tangent_bien_duong(
-                poly,
-                p_road,
-                tangent_tham_chieu=(dx_ref, dy_ref),
-            )
-
-            song_song_tangent = _cos_song_song(
-                dx_bien,
-                dy_bien,
-                dx_ref,
-                dy_ref,
-            )
-
-            if song_song_tangent >= 0.55:
-                dx, dy = dx_bien, dy_bien
-            else:
-                dx, dy = dx_ref, dy_ref
-
-            try:
-                side_probe = geom.representative_point()
-            except Exception:
-                side_probe = geom.centroid
-
-            wx = side_probe.x - p_road.x
-            wy = side_probe.y - p_road.y
-
-            if math.hypot(wx, wy) <= 1e-9:
-                cp = geom.centroid
-                wx = cp.x - p_road.x
-                wy = cp.y - p_road.y
-
-            cross = dx * wy - dy * wx
-
-            # Tin cay side = |sin(goc)| giua tangent va vector vao thua,
-            # ket hop chat luong frontage.
-            norm_t = math.hypot(dx, dy)
-            norm_w = math.hypot(wx, wy)
-
-            if norm_t > 1e-12 and norm_w > 1e-12:
-                tin_cay_ben = min(
-                    1.0,
-                    abs(cross) / (norm_t * norm_w),
-                )
-            else:
-                tin_cay_ben = 0.0
-
-            tin_cay_ben *= 0.55 + 0.45 * max(
-                0.0,
-                min(1.0, float(do_song_song)),
-            )
-
-            if cach_mat_tien != "DOC_TUYEN":
-                tin_cay_ben *= 0.75
-
-            if cross > 0:
-                side = GT_TRAI
-
-            elif cross < 0:
-                side = GT_PHAI
-
-            else:
-                cp = geom.centroid
-
-                wx2 = cp.x - p_road.x
-                wy2 = cp.y - p_road.y
-
-                cross2 = dx * wy2 - dy * wx2
-
-                side = GT_TRAI if cross2 > 0 else GT_PHAI
-
-            kc = float(p_road.distance(proj_point))
-
-            # Vi tri MAT DUONG tren boundary polygon la khoa thu tu chinh.
-            vi_tri_bien, chu_vi_bien, vong_bien = vi_tri_diem_tren_bien_duong(
-                poly,
-                p_road,
-            )
-
-            side_list.append(side)
-            manh_duong_list.append(int(manh_idx))
-            measure_list.append(m_sap)
-            dist_list.append(kc)
-            x_mat_duong_list.append(float(p_road.x))
-            y_mat_duong_list.append(float(p_road.y))
-            vi_tri_bien_list.append(vi_tri_bien)
-            chu_vi_bien_list.append(chu_vi_bien)
-            vong_bien_list.append(vong_bien)
-            song_song_list.append(float(do_song_song))
-            canh_mat_tien_list.append(int(canh_mat_tien))
-            cach_mat_tien_list.append(cach_mat_tien)
-            tin_cay_ben_list.append(float(tin_cay_ben))
-            cach_chieu_list.append(cach_chieu)
-            doan_tham_list.append(int(chi_so_seg))
-
-        group[COL_BEN] = side_list
         group[COL_HUONG] = huong
-        group["_manhDuong"] = manh_duong_list
-        group["_measure"] = measure_list
-        group["_dist_line"] = dist_list
-        group["_xMatDuong"] = x_mat_duong_list
-        group["_yMatDuong"] = y_mat_duong_list
-        group["_viTriBien"] = vi_tri_bien_list
-        group["_chuViBien"] = chu_vi_bien_list
-        group["_vongBien"] = vong_bien_list
-        group["_songSong"] = song_song_list
-        group["_canhMatTien"] = canh_mat_tien_list
-        group["_cachMatTien"] = cach_mat_tien_list
-        group["_tinCayBen"] = tin_cay_ben_list
-        group["_cachChieu"] = cach_chieu_list
-        group["_doanTham"] = doan_tham_list
 
         # ----------------------------------------------------
         # Nguyen tac: chia cum bang DIEM MAT DUONG CUA THUA, khong bang polygon road.
@@ -4190,6 +4672,8 @@ def process(houses, roads, verbose=True):
             "_xMatDuong",
             "_yMatDuong",
             "_viTriBien",
+            "_lechBien",
+            "_scoreThuTu",
             "_chuViBien",
             "_vongBien",
             "_songSong",
@@ -4277,7 +4761,7 @@ def process(houses, roads, verbose=True):
                 e,
             )
 
-    return out_gdf
+    return format_house_numbers(out_gdf, alley_contexts)
 
 
 # ============================================================

@@ -1,9 +1,87 @@
-HAPGIS v1.0.0 - RELEASE NOTES
+HAPGIS v1.1 - RELEASE NOTES
 
-- Core đánh số nhà: chốt bản 1.0.0 từ thuật toán đã regression-test.
-- GUI: thêm branding HAPGIS v1.0.0 và icon ứng dụng.
+Đường chính dạng tim đường (polyline) - thử nghiệm:
+- Lớp đường nhận thêm LineString/MultiLineString cho đường chính; polygon mặt đường vẫn chạy như cũ.
+- Tool tự nhận kiểu theo từng tuyến; giao diện hiển thị kiểu layer, báo cáo ghi số tuyến mỗi kiểu.
+- Tim đường được dùng trực tiếp làm tuyến tham chiếu, không cần dựng tim từ polygon; thửa lấn mặt đường
+  không còn làm sai bên TRÁI/PHẢI khi tim không cắt qua thửa.
+- Chặn trước khi chạy: tuyến lẫn polygon và polyline, tim phân nhánh, tim khép vòng, tim cắt qua thửa,
+  hẻm hoặc đường cha của hẻm vẽ bằng polyline. Tim nhiều đoạn rời chỉ cảnh báo.
+- Kết quả chế độ polygon trên bộ dữ liệu demo giữ nguyên từng thửa.
+
+Dữ liệu chỉ có tenDuong:
+- Trường tenHem để trống toàn bộ ở một lớp (lớp kia không có tenHem) được bỏ qua thay vì chặn vì sai schema;
+  giao diện tải cây tuyến và chạy như dữ liệu chỉ có tenDuong.
+
+Kiểm tra thửa đè lên mặt đường:
+- Chặn chạy khi tâm thửa nằm trong polygon đường cùng tuyến hoặc thửa bị đường cắt làm nhiều phần.
+- Cảnh báo khi thửa lấn quá 25% diện tích lên mặt đường cùng tuyến.
+
+Hỗ trợ mạng hẻm phân nhánh:
+- Dựng tim hẻm dạng cây, đặt gốc tại đúng miệng tiếp giáp đường cha và giữ toàn bộ nhánh thật.
+- Sắp thửa theo khoảng cách trên mạng từ miệng; xác định trái/phải bằng hướng cục bộ của nhánh.
+- Hai hẻm cùng đường cha và có miệng riêng được phép tiếp giáp; chỗ tiếp giáp chỉ tạo cảnh báo.
+- Vòng, đoạn rời, nhiều miệng mơ hồ và hẻm cấp 2 không có miệng riêng vẫn bị chặn.
+- Đã chạy trên 21 tuyến Quyết Thắng: 412/412 thửa được đánh số, không còn 7 lỗi chặn trước đây.
+
+Dung sai hình học có kiểm soát:
+- Thêm dung sai cố định 0,10 m cho tiếp giáp điểm và khe hở nhỏ tại miệng hẻm.
+- Dung sai chỉ áp dụng với đường cha xác định rõ và vị trí gần đầu tim hẻm; không dùng đường gần nhất.
+- Đoạn nối chỉ tồn tại trong tính toán, không sửa polygon hoặc thuộc tính nguồn.
+- Bỏ qua dải chồng hẻm–hẻm mỏng dưới ngưỡng kèm cảnh báo sai số digitize.
+- Tiếp giáp với hẻm khác đường cha, hẻm cấp 2 không có miệng riêng, vòng và đoạn rời vẫn chặn lượt ghi.
+- Báo cáo hiển thị số centimet đã dùng hoặc cảnh báo tiếp giáp điểm.
+
+Tối ưu quan hệ đường–hẻm và chọn nhiều tuyến:
+- Thêm schema tùy chọn tenHem ở cả hai lớp; tenDuong giữ vai trò đường cha.
+- Dữ liệu cũ không có tenHem vẫn được hỗ trợ bằng tên hẻm đầy đủ trong tenDuong.
+- Khóa tuyến dùng cặp (tenDuong, tenHem), chuẩn hóa Unicode, bỏ khoảng trắng ngoài và không phân biệt hoa/thường.
+- Thay dropdown tuyến đơn bằng cây checkbox có tìm kiếm, cuộn, trạng thái chọn một phần và chọn nhiều tuyến.
+- Bộ chọn mở thành cửa sổ rộng với thanh tìm kiếm, Chỉ đường/Chỉ hẻm, số kết quả và thanh Áp dụng cố định.
+- Con lăn chuột hoạt động trên toàn vùng danh sách; dữ liệu cũ hiển thị phẳng, không lặp “Đường chính”.
+- Form chính chỉ hiện một thẻ đại diện và nút “+N tuyến khác · Xem/sửa” khi chọn nhiều tuyến.
+- Chọn đường cha tự mở rộng thành đường chính cùng toàn bộ hẻm con; có thể bỏ từng hẻm bằng checkbox hoặc thẻ.
+- Nhập tay hỗ trợ dạng Đường cha › Hẻm; nút Tất cả chọn mọi tuyến chung giữa hai lớp.
+- Kiểm tra hình học chỉ dựng tuyến đã chọn và đường cha thực sự dùng; lỗi của đường không liên quan không còn chặn chạy.
+- Báo cáo ghi số đường cha, số hẻm và số tuyến tham chiếu; một lỗi trong phạm vi chọn vẫn chặn toàn bộ lượt ghi.
+- Số hẻm được bóc từ tenHem trong schema mới; toàn bộ thuộc tính tenDuong/tenHem được giữ trong đầu ra.
+
+Rà soát tinh chỉnh thứ tự đường thường:
+- Giữ cải tiến gán các thửa giáp nhiều mảnh, thứ tự khi trùng điểm tiếp cận, mặt tiền dài và nhóm 2–3 thửa.
+- Chỉ ưu tiên mảnh có nhiều thửa giáp khi thửa thực sự ở sát đường; thửa rời đường vẫn chọn mảnh gần nhất.
+- Khi điểm tiếp cận trùng nhau, dùng vị trí thân thửa để xác định chiều sắp thứ tự.
+- Điểm giữa mặt tiền dài được dùng nhất quán cho cả vị trí và chiều thứ tự, không thay điểm phân loại trái/phải.
+
+Bổ sung đánh hẻm:
+- Nhận diện số nguyên sau Hẻm/Hem trong tenDuong, ghép số hẻm/số nhà như 236/1.
+- soNhaHienThi xuất dạng chuỗi đồng nhất; thửa chưa có số giữ trống.
+- Xác định miệng hẻm từ đường chính, đánh tăng vào trong; trái lẻ/phải chẵn theo tiếp tuyến tại từng đoạn.
+- Giữ toàn bộ lớp đường tham chiếu khi lọc riêng hẻm; không yêu cầu thêm trường đầu vào.
+- Hẻm hai cửa dùng đường gốc trong tên hoặc mặt cắt lớn hơn khi xác định chắc chắn.
+- Chặn tên số hẻm không hỗ trợ, miệng không rõ, vòng/rời đoạn và hẻm nhiều cấp không có miệng riêng.
+- Thêm xem trước mẫu số, bảng báo cáo hẻm có cuộn và quy tắc dữ liệu trong GUI.
+
+Cập nhật GUI và cấu hình dữ liệu:
+- Dropdown tìm kiếm có giới hạn kích thước, 7 dòng và cuộn; không còn menu phủ màn hình.
+- Nền trắng–hồng sáng, nút chính hồng đậm; chế độ sáng mặc định và tùy chọn tối.
+- Hai nguồn cạnh nhau; chọn tuyến và nơi lưu cùng một hàng, tận dụng chiều rộng cửa sổ.
+- Thanh kiểm tra/chạy luôn ở cuối cửa sổ; nhật ký mở/thu gọn, không chiếm cột bên phải.
+- Thêm Quy tắc, Kiểm tra dữ liệu, Dùng nguồn thửa, Nạp lại và Lưu log.
+- Chuẩn hóa bắt buộc tenDuong ở cả hai lớp; bỏ lựa chọn trường đối chiếu khác.
+- Kiểm tra đầu vào trước xử lý: CRS giống nhau, projected, đơn vị mét, Polygon/MultiPolygon hợp lệ.
+- Báo số thửa khớp tuyến, giá trị trống/không khớp và khuyến nghị VN-2000 đúng khu vực.
+- Bố cục 3 bước có cuộn, dropdown và cửa sổ Quy tắc đồng bộ màu mới.
+- Tự tải dropdown giá trị tenDuong sau khi chọn lớp; báo rõ lớp thiếu trường và chặn chạy.
+- Chọn giá trị chung từ dropdown hoặc nhập tay, hỗ trợ nhiều giá trị bằng dấu ;.
+- Kiểm tra tenDuong và đọc giá trị ở nền; xóa lựa chọn cũ khi đổi nguồn hoặc layer.
+- Hỗ trợ chọn layer trong cả GDB và GeoPackage.
+- Tự điều chỉnh kích thước trên màn hình nhỏ với Windows DPI cao.
+- Kiểm thử bổ sung cho ánh xạ trường, lọc giá trị, GeoPackage và luồng GUI.
+
+- Core đánh số nhà: chốt bản 1.1 từ thuật toán đã regression-test.
+- GUI: branding HAPGIS v1.1 và icon ứng dụng.
 - EXE: cấu hình metadata Windows (Product name / Version / Description).
 - Đầu ra khuyến nghị: GeoPackage (.gpkg).
 - Lưu ý: vòng xuyến / vòng xoay chưa được kiểm thử đầy đủ.
 
-Không thay đổi thuật toán GIS trong gói branding này.
+Giữ các tinh chỉnh đường thường, sửa các trường hợp biên; bổ sung nhánh đánh hẻm từ miệng hẻm và số hiển thị dạng chuỗi.

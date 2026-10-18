@@ -25,6 +25,8 @@ from core_housenumber import (
     hau_kiem_thu_tu_theo_tiep_giap,
     hau_kiem_cap_terminal_hoan_doi,
     hau_kiem_hoan_doi_cap_cuoi_sau_danh_so,
+    gan_thua_vao_manh,
+    diem_giua_mat_tien_dai,
 )
 
 def run_tests():
@@ -323,6 +325,62 @@ def run_tests():
         g6_fix.iloc[-1][COL_BEN],
     )
     print("=> FINAL TAIL CROSS-SWAP PASS")
+
+    print("\n=== TEST THUA KEP GIUA HAI MANH ROAD ===")
+
+    # Duong chinh (3 thua ro rang) va hem nho cung tuyen (1 thua ro rang).
+    # 4 thua kep o giua cham CA HAI manh (khoang cach 0, representative point
+    # cach deu): phai cung vao manh co nhieu thua ro rang hon.
+    duong_chinh = box(-20, -100, 0, 100)
+    hem_nho = box(20, -100, 22, 100)
+    polys = [hem_nho, duong_chinh]
+    hinh = [box(-10, y, -1, y + 10) for y in (-90, -75, -60)]
+    hinh += [box(0, y, 20, y + 10) for y in (-30, -15, 0, 15)]
+    hinh += [box(23, 50, 30, 60)]
+    gg = gpd.GeoDataFrame(geometry=hinh, crs="EPSG:3857")
+    gan, _, dem = gan_thua_vao_manh(polys, gg)
+    assert [gan[i] for i in range(3, 7)] == [1, 1, 1, 1], gan
+    assert dem == [1, 7], dem
+    print("Gan:", gan)
+    print("=> THUA KEP KHONG BI TACH DOI PASS")
+
+    print("\n=== TEST HAI THUA CUNG CHAM 1 DINH BIEN DUONG ===")
+
+    # Cung vi_tri_bien: thu tu phai theo lech than thua, khong theo id.
+    g7 = gpd.GeoDataFrame(
+        {
+            "_manhDuong": [0, 0, 0],
+            "_vongBien": [0, 0, 0],
+            "_viTriBien": [10.0, 20.0, 20.0],
+            "_lechBien": [0.0, 4.0, -4.0],
+            "_chuViBien": [200, 200, 200],
+            "_measure": [1, 2, 3],
+            "_dist_line": [1, 1, 1],
+            "_xMatDuong": [100, 90, 90],
+            "_yMatDuong": [0, 0, 0],
+        },
+        index=[1, 2, 3],
+        geometry=[Point(x, 0) for x in [100, 94, 86]],
+        crs="EPSG:3857",
+    )
+    order, _ = thu_tu_thua_theo_bien_duong(g7, "D-T")
+    assert order.index(3) < order.index(2), order
+    print("Order:", order)
+    print("=> THU TU CHAINAGE HOA KHONG THEO ID PASS")
+
+    print("\n=== TEST DIEM GIUA MAT TIEN DAI ===")
+
+    duong = box(-20, 0, 0, 200)
+    lon = box(0, 10, 30, 110)  # mat tien thang 100 m
+    p = diem_giua_mat_tien_dai(lon, duong)
+    assert p is not None and abs(p.y - 60) < 0.5, p
+    nho = box(0, 10, 5, 20)  # mat tien 10 m: giu cach chon cu
+    assert diem_giua_mat_tien_dai(nho, duong) is None
+    # thua goc ngoai: mat tien gap khuc quanh goc, khong lay diem giua
+    goc_duong = box(-20, -20, 40, 0).union(box(-20, -20, 0, 200))
+    goc = box(0, 0, 40, 40)
+    assert diem_giua_mat_tien_dai(goc, goc_duong) is None
+    print("=> DIEM GIUA CHI AP DUNG MAT TIEN THANG VA DAI PASS")
 
     print("\n=== SELF TEST HAPGIS CORE: PASS ===")
 
