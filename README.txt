@@ -38,9 +38,13 @@ CÔNG CỤ ĐÁNH SỐ NHÀ TỰ ĐỘNG
 - Đường chính có thể là polygon mặt đường (Polygon/MultiPolygon) hoặc polyline tim đường
   (LineString/MultiLineString, chế độ thử nghiệm). Tool tự nhận kiểu theo từng tuyến và hiển thị
   kiểu layer sau khi chọn; mỗi tuyến chỉ được dùng một kiểu.
-- Tim đường: các đoạn cùng tuyến phải nối liền (đầu mút lệch tối đa 10 cm được tự nối), không phân nhánh,
-  không khép vòng (vòng xoay) và không cắt qua thửa. Vẽ theo chiều nào cũng được.
-  Đoạn rời có khe hở lớn hơn 10 cm chỉ cảnh báo; số nhà vẫn đánh liên tục qua các đoạn.
+- Tim đường: lớp tim cũng phải có trường tenDuong (tim tạo từ polygon bằng ArcGIS cần Join để chép
+  tenDuong sang). Tim không được cắt qua thửa và không khép vòng (vòng xoay) ở đoạn có thửa.
+  Vẽ theo chiều nào cũng được.
+- Tool tự xử lý tim tạo tự động từ polygon: nối đầu mút lệch tối đa 10 cm, bỏ râu cụt ngắn hơn 15 m
+  ở điểm rẽ nhánh và bỏ qua phần tim không có thửa. Tim phân nhánh ở đoạn có thửa (vd. đường chữ T)
+  được đánh từng nhánh như một đoạn riêng; tim đứt thành nhiều cụm được đánh liên tục theo chiều tuyến.
+  Hai trường hợp này chạy được nhưng có cảnh báo để rà lại trên bản đồ.
 - Hẻm vẫn phải là polygon mặt hẻm, và đường cha của hẻm đang chọn cũng phải là polygon.
 - Với polygon mặt đường, thửa không được vẽ đè lên mặt đường cùng tuyến. Kiểm tra dữ liệu chặn chạy khi tâm thửa
   (representative point) nằm trong polygon đường, hoặc thửa bị đường cắt thành từ 2 phần trở lên

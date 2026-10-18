@@ -3809,6 +3809,8 @@ KIEU_LAN = "lan"
 
 # Dau mut hai doan tim cung tuyen lech <= nguong nay (m) duoc coi la noi nhau.
 TIM_DUNG_SAI_NOI_M = 0.10
+# Nhanh cut ngan hon nguong nay (m) noi vao diem re nhanh la rau cua cong cu sinh tim, bi bo.
+TIM_RAU_TOI_DA_M = 15.0
 # Phan bien thua cach tim <= khoang cach gan nhat + nguong nay (m) la mat tien.
 MAT_TIEN_TIM_BAND_M = 0.5
 
@@ -3825,14 +3827,62 @@ def kieu_hinh_hoc_tuyen(geometries):
     return KIEU_LAN
 
 
-def phan_tich_tim_duong(geometries, dung_sai=TIM_DUNG_SAI_NOI_M):
+def _khoa_dinh(xy):
+    return (round(xy[0], 6), round(xy[1], 6))
+
+
+def _bac_dinh(lines):
+    """So dau mut tai moi nut (bo qua manh khep kin)."""
+    bac = {}
+    for line in lines:
+        if line.is_closed:
+            continue
+        for xy in (line.coords[0], line.coords[-1]):
+            khoa = _khoa_dinh(xy)
+            bac[khoa] = bac.get(khoa, 0) + 1
+    return bac
+
+
+def _gop_tim(lines):
+    merged = shapely.line_merge(shapely.union_all(lines))
+    return [line for line in shapely.get_parts(merged) if line.length > 0]
+
+
+def _cum_lien_thong(lines):
+    """Chi so cum lien thong (0..n) cho tung manh, noi qua dau mut chung."""
+    cha = {}
+
+    def goc(khoa):
+        cha.setdefault(khoa, khoa)
+        while cha[khoa] != khoa:
+            cha[khoa] = cha[cha[khoa]]
+            khoa = cha[khoa]
+        return khoa
+
+    for line in lines:
+        a = goc(_khoa_dinh(line.coords[0]))
+        b = goc(_khoa_dinh(line.coords[-1]))
+        cha[a] = b
+
+    ma = {}
+    return [ma.setdefault(goc(_khoa_dinh(line.coords[0])), len(ma)) for line in lines]
+
+
+def phan_tich_tim_duong(geometries, dung_sai=TIM_DUNG_SAI_NOI_M, rau_toi_da=TIM_RAU_TOI_DA_M):
     """
-    Noi cac doan tim cua 1 tuyen thanh cac LineString lien thong.
+    Noi cac doan tim cua 1 tuyen thanh cac LineString va bo rau.
+
+    Tim sinh tu dong tu polygon (vd. Polygon To Centerline) co cac nhanh cut
+    ngan dam vao mieng giao lo. Nhanh cut ngan hon `rau_toi_da` noi vao diem
+    re nhanh duoc bo lap lai, giong cong cu Trim Line cua ArcGIS.
 
     Tra ve dict:
-        lines : list LineString sau khi noi (moi phan tu = 1 manh)
-        nhanh : so nut co >= 3 doan gap nhau
-        vong  : so manh khep kin
+        lines    : list LineString sau khi noi (moi phan tu = 1 manh)
+        cum      : chi so cum lien thong cua tung manh
+        nut_nhanh: chi so cum cua tung nut co >= 3 doan gap nhau
+        nhanh    : so nut re nhanh
+        vong     : so manh khep kin
+        so_rau   : so rau da bo
     """
     parts = [
         part
@@ -3861,24 +3911,93 @@ def phan_tich_tim_duong(geometries, dung_sai=TIM_DUNG_SAI_NOI_M):
             snapped.append(LineString(coords))
 
     if not snapped:
-        return dict(lines=[], nhanh=0, vong=0)
+        return dict(lines=[], cum=[], nut_nhanh=[], nhanh=0, vong=0, so_rau=0)
 
-    merged = shapely.line_merge(shapely.union_all(snapped))
-    lines = [line for line in shapely.get_parts(merged) if line.length > 0]
+    lines = _gop_tim(snapped)
+    so_rau = 0
 
-    bac = {}
-    for line in lines:
-        if line.is_closed:
-            continue
+    while True:
+        bac = _bac_dinh(lines)
+        rau = set()
+        for i, line in enumerate(lines):
+            if line.is_closed or line.length >= rau_toi_da:
+                continue
+            bac_hai_dau = sorted(
+                (bac[_khoa_dinh(line.coords[0])], bac[_khoa_dinh(line.coords[-1])])
+            )
+            if bac_hai_dau[0] == 1 and bac_hai_dau[1] >= 3:
+                rau.add(i)
+        if not rau or len(rau) == len(lines):
+            break
+        so_rau += len(rau)
+        lines = _gop_tim([line for i, line in enumerate(lines) if i not in rau])
+
+    cum = _cum_lien_thong(lines)
+    bac = _bac_dinh(lines)
+    cum_cua_nut = {}
+    for line, c in zip(lines, cum):
         for xy in (line.coords[0], line.coords[-1]):
-            key = (round(xy[0], 6), round(xy[1], 6))
-            bac[key] = bac.get(key, 0) + 1
+            cum_cua_nut[_khoa_dinh(xy)] = c
+    nut_nhanh = [cum_cua_nut[khoa] for khoa, n in bac.items() if n >= 3]
 
     return dict(
         lines=lines,
-        nhanh=sum(1 for n in bac.values() if n >= 3),
+        cum=cum,
+        nut_nhanh=nut_nhanh,
+        nhanh=len(nut_nhanh),
         vong=sum(1 for line in lines if line.is_closed),
+        so_rau=so_rau,
     )
+
+
+def noi_chieu_cac_cum_tim(lines_theo_manh, cum, dem_thua):
+    """
+    Dinh huong lai cac cum tim roi nhau (moi cum 1 manh co thua) cho noi tiep.
+
+    Moi manh da duoc dinh huong rieng theo 4 huong; tuyen cong bi dut tim
+    (vd. qua giao lo) co the co doan sau bi lat chieu, lam dao TRAI/PHAI ca
+    doan. Lay manh nhieu thua nhat lam goc, noi dan cac manh con lai vao dau
+    hoac cuoi chuoi theo khoang cach dau mut. Cum co nhieu manh (phan nhanh)
+    giu huong rieng tung manh.
+    """
+    so_manh = {}
+    for i in lines_theo_manh:
+        so_manh[cum[i]] = so_manh.get(cum[i], 0) + 1
+    don = [i for i in lines_theo_manh if so_manh[cum[i]] == 1]
+
+    if len(don) < 2:
+        return lines_theo_manh
+
+    goc = max(don, key=lambda i: (dem_thua[i], lines_theo_manh[i].length, -i))
+    dau = Point(lines_theo_manh[goc].coords[0])
+    cuoi = Point(lines_theo_manh[goc].coords[-1])
+    con_lai = set(don) - {goc}
+
+    def khoang_cach(i):
+        line = lines_theo_manh[i]
+        a, b = Point(line.coords[0]), Point(line.coords[-1])
+        return min(a.distance(cuoi), b.distance(cuoi), a.distance(dau), b.distance(dau))
+
+    while con_lai:
+        i = min(con_lai, key=lambda k: (khoang_cach(k), k))
+        con_lai.remove(i)
+        line = lines_theo_manh[i]
+        a, b = Point(line.coords[0]), Point(line.coords[-1])
+
+        if min(a.distance(cuoi), b.distance(cuoi)) <= min(a.distance(dau), b.distance(dau)):
+            # Noi vao cuoi chuoi: dau manh phai gan cuoi chuoi.
+            if b.distance(cuoi) < a.distance(cuoi):
+                line = dao_line(line)
+            cuoi = Point(line.coords[-1])
+        else:
+            # Noi vao dau chuoi: cuoi manh phai gan dau chuoi.
+            if a.distance(dau) < b.distance(dau):
+                line = dao_line(line)
+            dau = Point(line.coords[0])
+
+        lines_theo_manh[i] = line
+
+    return lines_theo_manh
 
 
 def do_thua_theo_tim(geom, line, huong):
@@ -4268,13 +4387,14 @@ def process(houses, roads, verbose=True, reference_roads=None, alley_contexts=No
         if kieu == KIEU_TIM:
             tim = phan_tich_tim_duong(road.geometry)
 
-            if not tim["lines"] or tim["nhanh"] or tim["vong"]:
+            if not tim["lines"]:
                 if verbose:
-                    print(">> Tim duong rong / phan nhanh / khep vong -> giu nguyen")
+                    print(">> Tim duong rong -> giu nguyen")
                 results.append(group)
                 continue
 
-            # Che do tim: moi "manh" la 1 tim lien thong, cung la reference line.
+            # Che do tim: moi "manh" la 1 doan tim giua hai nut, cung la
+            # reference line. Nhanh re duoc danh nhu manh polygon rieng.
             polys = tim["lines"]
         else:
             polys = tach_polygon_components(road.geometry)
@@ -4291,6 +4411,12 @@ def process(houses, roads, verbose=True, reference_roads=None, alley_contexts=No
         )
 
         manh_co_thua = [i for i, n in enumerate(dem_thua) if n > 0]
+
+        if kieu == KIEU_TIM and any(polys[i].is_closed for i in manh_co_thua):
+            if verbose:
+                print(">> Tim khep vong co thua -> giu nguyen")
+            results.append(group)
+            continue
 
         if verbose:
             print("Tong polygon road:", len(polys))
@@ -4389,6 +4515,9 @@ def process(houses, roads, verbose=True, reference_roads=None, alley_contexts=No
                 lines_theo_manh[manh_idx],
                 huong,
             )
+
+        if kieu == KIEU_TIM:
+            lines_theo_manh = noi_chieu_cac_cum_tim(lines_theo_manh, tim["cum"], dem_thua)
 
         if verbose:
             print(

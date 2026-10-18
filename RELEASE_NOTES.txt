@@ -5,8 +5,12 @@ HAPGIS v1.1 - RELEASE NOTES
 - Tool tự nhận kiểu theo từng tuyến; giao diện hiển thị kiểu layer, báo cáo ghi số tuyến mỗi kiểu.
 - Tim đường được dùng trực tiếp làm tuyến tham chiếu, không cần dựng tim từ polygon; thửa lấn mặt đường
   không còn làm sai bên TRÁI/PHẢI khi tim không cắt qua thửa.
-- Chặn trước khi chạy: tuyến lẫn polygon và polyline, tim phân nhánh, tim khép vòng, tim cắt qua thửa,
-  hẻm hoặc đường cha của hẻm vẽ bằng polyline. Tim nhiều đoạn rời chỉ cảnh báo.
+- Chặn trước khi chạy: tuyến lẫn polygon và polyline, tim khép vòng ở đoạn có thửa, tim cắt qua thửa,
+  hẻm hoặc đường cha của hẻm vẽ bằng polyline.
+- Tim tạo tự động từ polygon: tự bỏ râu cụt ngắn hơn 15 m ở điểm rẽ nhánh và phần tim không có thửa.
+  Tim phân nhánh (đường chữ T) đánh từng nhánh như đoạn riêng; tim đứt nhiều cụm được định hướng nối tiếp
+  theo chiều tuyến. Cả hai chỉ cảnh báo.
+- Trên bộ testPD (tim tạo từ polygon Phong Điền): 345/345 thửa trùng kết quả chế độ polygon.
 - Kết quả chế độ polygon trên bộ dữ liệu demo giữ nguyên từng thửa.
 
 Dữ liệu chỉ có tenDuong:
