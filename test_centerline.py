@@ -17,6 +17,7 @@ from test_route_hierarchy import hierarchy_fixture
 CRS = "EPSG:3405"  # VN-2000 projected, metres.
 STRAIGHT = LineString([(0, 0), (120, 0)])
 ELL = LineString([(0, 0), (80, 0), (80, 80)])
+U_TURN = LineString([(0, 0), (100, 0), (100, 80), (0, 80)])
 CURVE = LineString([(x, 15 * math.sin(x / 25)) for x in range(0, 161, 4)])
 
 
@@ -104,7 +105,38 @@ class CenterlineNumberingTests(unittest.TestCase):
                          numbering(houses, roads_of(line)))
         report = kiem_tra_du_lieu(houses, roads_of(*pieces))
         self.assertEqual(report["errors"], [])
-        self.assertFalse(any("đoạn rời" in w for w in report["warnings"]))
+        self.assertFalse(any("nhiều cụm" in w for w in report["warnings"]))
+
+    def test_broken_bending_centerline_keeps_sides_across_gap(self):
+        # Like H9: a bending (here U-turn) route whose centerline breaks for 16 m. Each
+        # piece used to be oriented on its own, flipping TRAI/PHAI on the far piece.
+        for angle in (0, 30, 90, 135, 200, 290):
+            with self.subTest(angle=angle):
+                houses, _, _ = street(U_TURN, angle)
+                pieces = [LineString([(0, 0), (100, 0), (100, 32)]), LineString([(100, 48), (100, 80), (0, 80)])]
+                pieces = [rotate(p, angle, origin=(0, 0)) for p in pieces]
+                self.assert_follows_sides(houses, numbering(houses, roads_of(*pieces)))
+
+    def test_short_spurs_are_trimmed(self):
+        # Polygon-to-centerline tools leave short dangles into junction mouths.
+        houses, _, line = street(STRAIGHT)
+        spurs = [LineString([(60, 0), (60, -10)]), LineString([(100, 0), (104, 9)])]
+        roads = roads_of(line, *spurs)
+        report = kiem_tra_du_lieu(houses, roads)
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["warnings"], [])
+        self.assertTrue(any("bỏ qua 2 râu" in d for d in report["details"]), report["details"])
+        self.assertEqual(numbering(houses, roads), numbering(houses, roads_of(line)))
+
+    def test_t_branch_is_numbered_with_warning(self):
+        houses, _, _ = street(STRAIGHT)
+        roads = roads_of(LineString([(0, 0), (150, 0)]), LineString([(124, 0), (124, 40)]))
+        report = kiem_tra_du_lieu(houses, roads)
+        self.assertEqual(report["errors"], [])
+        self.assertTrue(any("phân nhánh ở đoạn có thửa" in w for w in report["warnings"]), report["warnings"])
+        out = numbering(houses, roads)
+        self.assertTrue(all(n is not None for _, n in out))
+        self.assert_follows_sides(houses, out)
 
     def test_parcels_drawn_over_road_surface_still_numbered(self):
         # Parcels start 1 m from the centerline: 75% of each lies on the 8 m road surface.
@@ -132,7 +164,7 @@ class CenterlineValidationTests(unittest.TestCase):
         pieces = [LineString([(0, 0), (55, 0)]), LineString([(60, 0), (120, 0)])]
         report = self.report(roads_of(*pieces))
         self.assertEqual(report["errors"], [])
-        self.assertTrue(any("nhiều đoạn rời" in w for w in report["warnings"]))
+        self.assertTrue(any("nhiều cụm có thửa" in w for w in report["warnings"]))
         out = process(self.houses, roads_of(*pieces), verbose=False)
         self.assertTrue(out[COL_SONHA].notna().all())
 
@@ -142,16 +174,25 @@ class CenterlineValidationTests(unittest.TestCase):
         errors = self.report(roads_of(self.line), houses)["errors"]
         self.assertTrue(any("cắt qua" in e and "dòng #0" in e for e in errors), errors)
 
-    def test_branching_closed_and_mixed_routes_are_errors(self):
-        branch = roads_of(self.line, LineString([(60, 0), (60, 40)]))
+    def test_closed_and_mixed_routes_are_errors(self):
         ring = roads_of(LineString([(0, 0), (120, 0), (120, 60), (0, 60), (0, 0)]))
         mixed = roads_of(LineString([(0, 0), (60, 0)]), self.road)
-        for roads, text in ((branch, "phân nhánh"), (ring, "khép kín"), (mixed, "lẫn polygon và polyline")):
+        for roads, text in ((ring, "khép kín"), (mixed, "lẫn polygon và polyline")):
             with self.subTest(text=text):
                 errors = self.report(roads)["errors"]
                 self.assertTrue(any(text in e for e in errors), errors)
                 # The engine itself never numbers these routes either.
                 self.assertTrue(process(self.houses, roads, verbose=False)[COL_SONHA].isna().all())
+
+    def test_network_parts_without_parcels_are_ignored(self):
+        # A loop and a branch far from every parcel of the route (H9 in testPD.gdb).
+        far_ring = LineString([(0, 500), (60, 500), (60, 560), (0, 560), (0, 500)])
+        far_branch = [LineString([(300, 0), (400, 0)]), LineString([(350, 0), (350, 50)])]
+        roads = roads_of(self.line, far_ring, *far_branch)
+        report = self.report(roads)
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["warnings"], [])
+        self.assertEqual(numbering(self.houses, roads), numbering(self.houses, roads_of(self.line)))
 
     def test_alley_and_alley_parent_must_stay_polygons(self):
         houses, roads = hierarchy_fixture()

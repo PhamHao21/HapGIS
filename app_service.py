@@ -31,6 +31,7 @@ from core_housenumber import (
     LOAI_POLYGON,
     LOAI_TIM,
     TIM_DUNG_SAI_NOI_M,
+    TIM_RAU_TOI_DA_M,
     kieu_hinh_hoc_tuyen,
     kiem_tra_he_toa_do,
     phan_tich_tim_duong,
@@ -305,38 +306,59 @@ def kiem_tra_tim_duong(houses, roads, house_keys, road_keys, common):
         errors.append(f"Đường: {count} lẫn polygon và polyline; mỗi tuyến chỉ được dùng một kiểu "
                       f"hình học. Ví dụ: {examples}.")
 
+    house_geoms = houses.geometry.to_numpy()
+    thua_theo_tuyen = {}
+    for pos, key in enumerate(house_keys):
+        geom = house_geoms[pos]
+        if geom is not None and not geom.is_empty and geom.geom_type in LOAI_POLYGON:
+            thua_theo_tuyen.setdefault(key, []).append(geom)
+
     tim_lines = {}
     nhanh, vong, roi, rong = [], [], [], []
+    so_rau = 0
     for key in (key for key, value in kieu.items() if value == KIEU_TIM):
         tim = phan_tich_tim_duong(geometries[vi_tri[key]])
         if not tim["lines"]:
             rong.append(key)
             continue
-        tim_lines[key] = shapely.union_all(tim["lines"])
-        if tim["nhanh"]:
-            nhanh.append(key)
-        if tim["vong"]:
+        so_rau += tim["so_rau"]
+        thua = thua_theo_tuyen.get(key, [])
+        gan_nhat = (shapely.STRtree(tim["lines"]).query_nearest(thua, all_matches=False)[1]
+                    if thua else [])
+        manh_co_thua = {int(i) for i in gan_nhat}
+        cum_co_thua = {tim["cum"][i] for i in manh_co_thua}
+        if not cum_co_thua:
+            continue
+        # Chỉ xét các cụm tim có thửa; phần tim xa khu thửa không ảnh hưởng đánh số.
+        tim_lines[key] = shapely.union_all(
+            [line for line, cum in zip(tim["lines"], tim["cum"]) if cum in cum_co_thua])
+        if any(tim["lines"][i].is_closed for i in manh_co_thua):
             vong.append(key)
-        if len(tim["lines"]) > 1:
+        if any(cum in cum_co_thua for cum in tim["nut_nhanh"]):
+            nhanh.append(key)
+        if len(cum_co_thua) > 1:
             roi.append(key)
     for keys, message in (
         (rong, "polyline có độ dài 0"),
-        (nhanh, "polyline phân nhánh (một điểm có từ 3 đoạn gặp nhau); chưa hỗ trợ, hãy tách nhánh "
-                "thành tuyến riêng hoặc dùng polygon mặt đường"),
-        (vong, "polyline khép kín thành vòng (vòng xoay); chưa hỗ trợ"),
+        (vong, "polyline khép kín thành vòng (vòng xoay) ở đoạn có thửa; chưa hỗ trợ"),
     ):
         if keys:
             count, examples = lap(keys)
             errors.append(f"Đường: {count} {message}. Ví dụ: {examples}.")
+    if nhanh:
+        count, examples = lap(nhanh)
+        warnings.append(
+            f"Đường: {count} polyline phân nhánh ở đoạn có thửa (một điểm có từ 3 đoạn gặp nhau); mỗi nhánh "
+            f"được đánh như một đoạn riêng, nên rà lại số nhà quanh điểm rẽ nhánh. Ví dụ: {examples}.")
     if roi:
         count, examples = lap(roi)
         warnings.append(
-            f"Đường: {count} polyline gồm nhiều đoạn rời (khe hở lớn hơn {TIM_DUNG_SAI_NOI_M * 100:.0f} cm "
-            f"giữa các đầu mút); số nhà vẫn đánh liên tục qua các đoạn, nên nối lại tim. Ví dụ: {examples}.")
+            f"Đường: {count} polyline đứt thành nhiều cụm có thửa (khe hở lớn hơn {TIM_DUNG_SAI_NOI_M * 100:.0f} cm "
+            f"giữa các đầu mút); số nhà vẫn đánh liên tục qua các cụm, nên nối lại tim. Ví dụ: {examples}.")
 
     if tim_lines:
         house_geoms = houses.geometry.to_numpy()
-        positions = np.array([pos for pos, key in enumerate(house_keys) if key in tim_lines
+        positions = np.array([pos for pos, key in enumerate(house_keys) if tim_lines.get(key) is not None
                               and house_geoms[pos] is not None and not house_geoms[pos].is_empty
                               and house_geoms[pos].geom_type in LOAI_POLYGON], dtype=int)
         if len(positions):
@@ -352,6 +374,7 @@ def kiem_tra_tim_duong(houses, roads, house_keys, road_keys, common):
                     f"định được thửa nằm bên TRÁI hay PHẢI. Cần sửa tim hoặc ranh thửa. Ví dụ: {examples}.")
 
     counts = {value: sum(1 for k in kieu.values() if k == value) for value in (KIEU_POLYGON, KIEU_TIM)}
+    counts["so_rau"] = so_rau
     return errors, warnings, counts
 
 
@@ -426,6 +449,10 @@ def kiem_tra_du_lieu(houses, roads, tuyen="", route_keys=None):
         report["details"].append(
             f"Kiểu đường: {counts[KIEU_POLYGON]:,} tuyến polygon (mặt đường) · "
             f"{counts[KIEU_TIM]:,} tuyến polyline (tim đường, thử nghiệm)")
+        if counts["so_rau"]:
+            report["details"].append(
+                f"Tim đường: đã bỏ qua {counts['so_rau']:,} râu cụt ngắn hơn {TIM_RAU_TOI_DA_M:.0f} m "
+                "ở các điểm rẽ nhánh (sinh ra khi tạo tim từ polygon).")
     report["alley_routes"] = []
     report["_alley_contexts"] = {}
     if not report["errors"]:
