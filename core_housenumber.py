@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """
-HAPGIS Core 1.1
+HAPGIS Core 1.2
 ---------------
 Thuật toán đánh số nhà tự động trên dữ liệu GIS.
 
@@ -19,7 +19,7 @@ Lưu ý:
 """
 
 CORE_NAME = "HAPGIS"
-CORE_VERSION = "1.1"
+CORE_VERSION = "1.2"
 
 import heapq
 import math

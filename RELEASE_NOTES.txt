@@ -1,4 +1,4 @@
-HAPGIS v1.1 - RELEASE NOTES
+HAPGIS v1.2 - RELEASE NOTES
 
 Đường chính dạng tim đường (polyline) - thử nghiệm:
 - Lớp đường nhận thêm LineString/MultiLineString cho đường chính; polygon mặt đường vẫn chạy như cũ.
