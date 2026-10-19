@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pyogrio
 import shapely
-from alley_numbering import prepare_alleys
+from alley_numbering import parse_alley_name, prepare_alleys
 from route_catalog import (
     FIELD_ALLEY,
     build_route_catalog,
@@ -282,6 +282,16 @@ def _ten_tuyen(row):
     return " › ".join(filter(None, (display_name(row.get(field)) for field in (FIELD_ROUTE, FIELD_ALLEY))))
 
 
+def _la_hem(key, name):
+    """Hẻm theo schema tenHem (khóa có phần hẻm) hoặc theo tên cũ bắt đầu bằng Hẻm/Hem."""
+    if key[1]:
+        return True
+    try:
+        return parse_alley_name(name).is_alley
+    except ValueError:
+        return True
+
+
 def kiem_tra_tim_duong(houses, roads, house_keys, road_keys, common):
     """
     Phân loại kiểu hình học từng tuyến và kiểm tra các tuyến vẽ bằng tim đường.
@@ -317,6 +327,15 @@ def kiem_tra_tim_duong(houses, roads, house_keys, road_keys, common):
     nhanh, vong, roi, rong = [], [], [], []
     so_rau = 0
     for key in (key for key, value in kieu.items() if value == KIEU_TIM):
+        if _la_hem(key, ten[key]):
+            # Hẻm: mạng tim được kiểm tra khi tìm miệng hẻm (prepare_alleys); không tỉa
+            # râu vì nhánh hẻm thật có thể ngắn. Ở đây chỉ kiểm tra tim cắt qua thửa.
+            tim = phan_tich_tim_duong(geometries[vi_tri[key]], rau_toi_da=0)
+            if tim["lines"]:
+                tim_lines[key] = shapely.union_all(tim["lines"])
+            else:
+                rong.append(key)
+            continue
         tim = phan_tich_tim_duong(geometries[vi_tri[key]])
         if not tim["lines"]:
             rong.append(key)

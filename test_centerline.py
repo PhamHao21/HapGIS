@@ -12,7 +12,6 @@ from shapely.ops import substring
 
 from app_service import chay_danh_so, kiem_tra_du_lieu
 from core_housenumber import COL_BEN, COL_SONHA, process
-from test_route_hierarchy import hierarchy_fixture
 
 CRS = "EPSG:3405"  # VN-2000 projected, metres.
 STRAIGHT = LineString([(0, 0), (120, 0)])
@@ -193,19 +192,6 @@ class CenterlineValidationTests(unittest.TestCase):
         self.assertEqual(report["errors"], [])
         self.assertEqual(report["warnings"], [])
         self.assertEqual(numbering(self.houses, roads), numbering(self.houses, roads_of(self.line)))
-
-    def test_alley_and_alley_parent_must_stay_polygons(self):
-        houses, roads = hierarchy_fixture()
-        main_line = LineString([(-20, -4), (20, -4)])
-        with_line_parent = roads.copy()
-        with_line_parent.loc[1, "geometry"] = main_line
-        errors = kiem_tra_du_lieu(houses, with_line_parent)["errors"]
-        self.assertTrue(any("đường cha" in e and "polyline" in e for e in errors), errors)
-
-        line_alley = roads.copy()
-        line_alley.loc[0, "geometry"] = LineString([(0, 0), (0, 60)])
-        errors = kiem_tra_du_lieu(houses, line_alley)["errors"]
-        self.assertTrue(any("hẻm phải vẽ bằng polygon" in e for e in errors), errors)
 
 
 class CenterlineFileTests(unittest.TestCase):

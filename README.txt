@@ -12,7 +12,7 @@ CÔNG CỤ ĐÁNH SỐ NHÀ TỰ ĐỘNG
 - Nút Quy tắc giải thích điều kiện dữ liệu; Kiểm tra dữ liệu báo CRS, hình học, thửa đè lên đường và tuyến không khớp.
 - Nút Dùng nguồn thửa giúp chọn nhanh hai layer cùng GDB/GPKG; Nạp lại để đọc lại dữ liệu.
 - Lưu nhật ký phiên ra file .log để kiểm tra hoặc gửi khi gặp lỗi.
-- Đường chính nhận polygon mặt đường hoặc polyline tim đường (thử nghiệm); hẻm vẫn dùng polygon.
+- Đường chính và hẻm nhận polygon mặt đường hoặc polyline tim đường (thử nghiệm).
 - Tự động xác định hướng đánh số.
 - Phân loại bên TRÁI / PHẢI.
 - Tạo thứ tự địa chỉ và sinh số nhà chẵn / lẻ.
@@ -45,7 +45,10 @@ CÔNG CỤ ĐÁNH SỐ NHÀ TỰ ĐỘNG
   ở điểm rẽ nhánh và bỏ qua phần tim không có thửa. Tim phân nhánh ở đoạn có thửa (vd. đường chữ T)
   được đánh từng nhánh như một đoạn riêng; tim đứt thành nhiều cụm được đánh liên tục theo chiều tuyến.
   Hai trường hợp này chạy được nhưng có cảnh báo để rà lại trên bản đồ.
-- Hẻm vẫn phải là polygon mặt hẻm, và đường cha của hẻm đang chọn cũng phải là polygon.
+- Hẻm vẽ bằng polygon cần đường cha polygon. Hẻm vẽ bằng tim đường dùng được với đường cha là tim
+  hoặc polygon: miệng hẻm là đầu tim gần đường cha nhất (cách tối đa 20 m) và phải gần hơn hẳn
+  các đầu tim khác. Tim hẻm phải liền một khối, không vòng; nhánh hẻm ngắn được giữ nguyên.
+  Hẻm tim thông hai đường phải ghi đường cha trong tên hẻm hoặc tenHem (không so mặt cắt được).
 - Với polygon mặt đường, thửa không được vẽ đè lên mặt đường cùng tuyến. Kiểm tra dữ liệu chặn chạy khi tâm thửa
   (representative point) nằm trong polygon đường, hoặc thửa bị đường cắt thành từ 2 phần trở lên
   (vẽ xuyên qua đường); thửa lấn quá 25% diện tích lên mặt đường được cảnh báo.
