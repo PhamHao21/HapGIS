@@ -18,7 +18,7 @@ from shapely.ops import unary_union, nearest_points
 
 from core_housenumber import (
     FIELD_ROUTE, COL_BEN, COL_STT, COL_SONHA, COL_HUONG,
-    GT_TRAI, GT_PHAI, STEP, khoa_ten, lay_cac_line,
+    GT_TRAI, GT_PHAI, STEP, MAT_TIEN_TIM_BAND_M, khoa_ten, lay_cac_line,
 )
 from route_catalog import (
     FIELD_ALLEY, normalize_name, route_key_series, route_label,
@@ -521,6 +521,80 @@ def resolve_alley(name, parsed, road_groups, own_key=None, explicit_parent_key=N
     )
 
 
+LINE_TYPES = ("LineString", "MultiLineString")
+# Đầu tim hẻm cách tim (hoặc mép) đường cha tối đa bao nhiêu mét thì được nhận là miệng hẻm.
+MIENG_HEM_TIM_TOI_DA_M = 20.0
+
+
+def _tim_graph(geometry):
+    """Tree graph {node: {neighbours}} from an alley centerline (no spur trimming)."""
+    from core_housenumber import phan_tich_tim_duong
+
+    tim = phan_tich_tim_duong([geometry], rau_toi_da=0)
+    lines = tim["lines"]
+    if not lines:
+        raise ValueError("tim hẻm rỗng hoặc có độ dài 0")
+    if len(set(tim["cum"])) > 1:
+        raise ValueError("tim hẻm có đoạn rời (khe hở lớn hơn 10 cm); cần nối lại tim")
+    if tim["vong"]:
+        raise ValueError("tim hẻm có vòng; chưa xác định được chiều từ miệng hẻm")
+    graph = {}
+    for line in lines:
+        coords = [tuple(c[:2]) for c in line.coords]
+        for a, b in zip(coords, coords[1:]):
+            if a != b:
+                graph.setdefault(a, set()).add(b)
+                graph.setdefault(b, set()).add(a)
+    edge_count = sum(len(links) for links in graph.values()) // 2
+    if edge_count != len(graph) - 1:
+        raise ValueError("tim hẻm có vòng; chưa xác định được chiều từ miệng hẻm")
+    return graph
+
+
+def resolve_alley_tim(name, parsed, geometry, parents):
+    """
+    Alley drawn as a centerline: the mouth is the alley end nearest the parent.
+
+    The nearest end must lie within MIENG_HEM_TIM_TOI_DA_M of the parent and be
+    clearly nearer than every other end; otherwise the entrance is ambiguous.
+    """
+    graph = _tim_graph(geometry)
+    ends = [node for node, links in graph.items() if len(links) == 1]
+    if not parents:
+        raise ValueError(f"không tìm thấy đường chính trong phạm vi {MIENG_HEM_TIM_TOI_DA_M:.0f} m "
+                         "quanh tim hẻm; ghi đường cha trong tên hẻm hoặc tenHem")
+    for parent_name, parent_geometry in parents.values():
+        if parent_geometry is None or parent_geometry.is_empty:
+            raise ValueError(f"đường cha '{parent_name}' có hình học rỗng")
+
+    matches = sorted(
+        ((Point(end).distance(parent_geometry), end, parent_name, parent_geometry)
+         for end in ends
+         for parent_name, parent_geometry in parents.values()),
+        key=lambda item: (item[0], item[1]),
+    )
+    distance, root, parent_name, parent_geometry = matches[0]
+    if distance > MIENG_HEM_TIM_TOI_DA_M:
+        raise ValueError(f"không tìm thấy miệng hẻm: đầu tim hẻm gần nhất cách '{parent_name}' "
+                         f"{distance:.1f} m (tối đa {MIENG_HEM_TIM_TOI_DA_M:.0f} m)")
+    others = [m for m in matches[1:] if m[1] != root and m[0] <= MIENG_HEM_TIM_TOI_DA_M]
+    if others and others[0][0] <= 2 * distance + 2.0:
+        raise ValueError(f"có nhiều đầu tim hẻm gần đường cha ('{parent_name}' và '{others[0][2]}'); "
+                         "chưa xác định được miệng hẻm")
+    mouth = nearest_points(parent_geometry, Point(root))[0]
+    line, network_edges = _orient_network(graph, root, mouth)
+    branch_count = max(0, len(ends) - 1) if len(ends) > 2 else 0
+    warnings = []
+    if branch_count:
+        warnings.append(
+            f"Mạng hẻm phân nhánh · Đánh số theo khoảng cách từ miệng trên {branch_count} nhánh")
+    return AlleyRoute(
+        name=name, prefix=parsed.prefix, parent_name=parent_name,
+        polygon=None, line=line, network_edges=network_edges,
+        branch_count=branch_count, warnings=tuple(warnings),
+    )
+
+
 def prepare_alleys(route_keys, reference_roads, hierarchical=None):
     """Resolve only selected alleys and the references they actually require."""
     contexts, rows, errors = {}, [], []
@@ -585,75 +659,98 @@ def prepare_alleys(route_keys, reference_roads, hierarchical=None):
         row = dict(route=name, prefix=parsed.prefix or "Không số", parent="—", status="", is_alley=True)
         try:
             own = union_for(key)
-            if own[1].geom_type not in ("Polygon", "MultiPolygon"):
-                raise ValueError("hẻm phải vẽ bằng polygon mặt hẻm; tim đường (polyline) "
-                                 "mới hỗ trợ cho đường chính")
-            relevant = {key: own}
-            explicit_parent_key = None
-            tolerant_parent_keys = set()
-            if hierarchical:
-                explicit_parent_key = (parent_key, "")
-                if explicit_parent_key not in grouped_indices:
-                    raise ValueError("thiếu polygon đường chính có tenHem trống để làm đường cha")
-                relevant[explicit_parent_key] = union_for(explicit_parent_key)
-                if relevant[explicit_parent_key][1].geom_type not in ("Polygon", "MultiPolygon"):
-                    raise ValueError(f"đường cha '{relevant[explicit_parent_key][0]}' là tim đường "
-                                     "(polyline); hẻm chỉ đánh được khi đường cha là polygon")
-                tolerant_parent_keys.add(explicit_parent_key)
-                # The explicit parent fixes direction, but touching alley
-                # polygons are still inspected to reject real level-2 links
-                # and ignore only sub-tolerance digitizing slivers.
-                if spatial_index is not None:
-                    try:
-                        neighbours = spatial_index.query(own[1], predicate="intersects")
-                    except Exception:
-                        neighbours = spatial_index.query(own[1])
-                    neighbour_keys = {ref_keys.iloc[pos] for pos in neighbours}
-                    for candidate in neighbour_keys - {key, explicit_parent_key, ("", "")}:
-                        if candidate[1]:
-                            relevant[candidate] = union_for(candidate)
-            else:
-                own_geometry = own[1]
-                candidate_indices = []
-                if spatial_index is not None:
-                    try:
-                        candidate_indices = list(spatial_index.query(
-                            own_geometry.buffer(GEOMETRY_TOLERANCE_M), predicate="intersects"))
-                    except Exception:
-                        candidate_indices = list(spatial_index.query(
-                            own_geometry.buffer(GEOMETRY_TOLERANCE_M)))
-                else:
-                    candidate_indices = [pos for pos, geom in enumerate(reference_roads.geometry)
-                                         if geom is not None and not geom.is_empty
-                                         and geom.bounds[2] >= own_geometry.bounds[0]
-                                         and geom.bounds[0] <= own_geometry.bounds[2]
-                                         and geom.bounds[3] >= own_geometry.bounds[1]
-                                         and geom.bounds[1] <= own_geometry.bounds[3]]
-                candidate_keys = {ref_keys.iloc[pos] for pos in candidate_indices}
-                named_keys = set()
-                if parsed.parent_hint:
-                    named_keys = {
+            if own[1].geom_type in LINE_TYPES:
+                if hierarchical:
+                    parent_keys = [(parent_key, "")]
+                    if parent_keys[0] not in grouped_indices:
+                        raise ValueError("thiếu đường chính có tenHem trống để làm đường cha")
+                elif parsed.parent_hint:
+                    parent_keys = [
                         candidate for candidate, label in displays.items()
-                        if candidate != key and _parent_key(label) == _parent_key(parsed.parent_hint)
-                    }
-                    candidate_keys.update(named_keys)
-                    tolerant_parent_keys.update(named_keys)
-                for candidate in candidate_keys - {key, ("", "")}:
-                    # Bounding-box candidates are cheap; exact contact avoids
-                    # validating or unioning unrelated routes. A small gap is
-                    # considered only for the parent named by the alley.
-                    parts = reference_roads.loc[grouped_indices[candidate]].geometry
-                    exact = any(geom is not None and not geom.is_empty and own_geometry.intersects(geom)
-                                for geom in parts)
-                    near_named = (candidate in named_keys and any(
-                        geom is not None and not geom.is_empty
-                        and own_geometry.distance(geom) <= GEOMETRY_TOLERANCE_M + EPS
-                        for geom in parts))
-                    if exact or near_named:
-                        relevant[candidate] = union_for(candidate)
-            context = resolve_alley(
-                name, parsed, relevant, key, explicit_parent_key,
-                tolerant_parent_keys=tolerant_parent_keys)
+                        if candidate != key and not _label_is_alley(label)
+                        and _parent_key(label) == _parent_key(parsed.parent_hint)
+                    ]
+                    if not parent_keys:
+                        raise ValueError(f"không tìm thấy đường cha '{parsed.parent_hint}' trong lớp đường")
+                else:
+                    near = own[1].buffer(MIENG_HEM_TIM_TOI_DA_M)
+                    positions = (spatial_index.query(near, predicate="intersects")
+                                 if spatial_index is not None else range(len(reference_roads)))
+                    parent_keys = sorted({
+                        ref_keys.iloc[pos] for pos in positions
+                        if ref_keys.iloc[pos] not in (key, ("", ""))
+                        and not _label_is_alley(displays.get(ref_keys.iloc[pos], ""))
+                    })
+                context = resolve_alley_tim(
+                    name, parsed, own[1], {candidate: union_for(candidate) for candidate in parent_keys})
+            else:
+                relevant = {key: own}
+                explicit_parent_key = None
+                tolerant_parent_keys = set()
+                if hierarchical:
+                    explicit_parent_key = (parent_key, "")
+                    if explicit_parent_key not in grouped_indices:
+                        raise ValueError("thiếu polygon đường chính có tenHem trống để làm đường cha")
+                    relevant[explicit_parent_key] = union_for(explicit_parent_key)
+                    if relevant[explicit_parent_key][1].geom_type not in ("Polygon", "MultiPolygon"):
+                        raise ValueError(f"đường cha '{relevant[explicit_parent_key][0]}' là tim đường "
+                                         "(polyline); hẻm vẽ bằng polygon cần đường cha polygon, "
+                                         "hoặc vẽ cả hẻm bằng tim đường")
+                    tolerant_parent_keys.add(explicit_parent_key)
+                    # The explicit parent fixes direction, but touching alley
+                    # polygons are still inspected to reject real level-2 links
+                    # and ignore only sub-tolerance digitizing slivers.
+                    if spatial_index is not None:
+                        try:
+                            neighbours = spatial_index.query(own[1], predicate="intersects")
+                        except Exception:
+                            neighbours = spatial_index.query(own[1])
+                        neighbour_keys = {ref_keys.iloc[pos] for pos in neighbours}
+                        for candidate in neighbour_keys - {key, explicit_parent_key, ("", "")}:
+                            if candidate[1]:
+                                relevant[candidate] = union_for(candidate)
+                else:
+                    own_geometry = own[1]
+                    candidate_indices = []
+                    if spatial_index is not None:
+                        try:
+                            candidate_indices = list(spatial_index.query(
+                                own_geometry.buffer(GEOMETRY_TOLERANCE_M), predicate="intersects"))
+                        except Exception:
+                            candidate_indices = list(spatial_index.query(
+                                own_geometry.buffer(GEOMETRY_TOLERANCE_M)))
+                    else:
+                        candidate_indices = [pos for pos, geom in enumerate(reference_roads.geometry)
+                                             if geom is not None and not geom.is_empty
+                                             and geom.bounds[2] >= own_geometry.bounds[0]
+                                             and geom.bounds[0] <= own_geometry.bounds[2]
+                                             and geom.bounds[3] >= own_geometry.bounds[1]
+                                             and geom.bounds[1] <= own_geometry.bounds[3]]
+                    candidate_keys = {ref_keys.iloc[pos] for pos in candidate_indices}
+                    named_keys = set()
+                    if parsed.parent_hint:
+                        named_keys = {
+                            candidate for candidate, label in displays.items()
+                            if candidate != key and _parent_key(label) == _parent_key(parsed.parent_hint)
+                        }
+                        candidate_keys.update(named_keys)
+                        tolerant_parent_keys.update(named_keys)
+                    for candidate in candidate_keys - {key, ("", "")}:
+                        # Bounding-box candidates are cheap; exact contact avoids
+                        # validating or unioning unrelated routes. A small gap is
+                        # considered only for the parent named by the alley.
+                        parts = reference_roads.loc[grouped_indices[candidate]].geometry
+                        exact = any(geom is not None and not geom.is_empty and own_geometry.intersects(geom)
+                                    for geom in parts)
+                        near_named = (candidate in named_keys and any(
+                            geom is not None and not geom.is_empty
+                            and own_geometry.distance(geom) <= GEOMETRY_TOLERANCE_M + EPS
+                            for geom in parts))
+                        if exact or near_named:
+                            relevant[candidate] = union_for(candidate)
+                context = resolve_alley(
+                    name, parsed, relevant, key, explicit_parent_key,
+                    tolerant_parent_keys=tolerant_parent_keys)
             contexts[key] = context
             warning = " · ".join(context.warnings)
             status = "Từ miệng hẻm vào trong · Trái lẻ / phải chẵn"
@@ -694,17 +791,26 @@ def number_alley(group, context):
     """Order frontage along the entrance-oriented line; use local side signs."""
     group = group.copy()
     line, polygon = context.line, context.polygon
+    network = (unary_union([edge.line for edge in context.network_edges] or [line])
+               if polygon is None else None)
     numbered = []
     for index, row in group.iterrows():
         geometry = row.geometry
         if geometry is None or geometry.is_empty or not geometry.is_valid:
             raise ValueError(f"{context.name}: thửa có hình học không hợp lệ")
-        shared = geometry.boundary.intersection(polygon.boundary)
-        frontages = lay_cac_line(shared)
-        if frontages:
-            front = max(frontages, key=lambda part: part.length).interpolate(.5, normalized=True)
+        if polygon is None:
+            # Centerline alley: frontage = parcel boundary nearest the network.
+            near = network.buffer(geometry.distance(network) + MAT_TIEN_TIM_BAND_M)
+            frontages = lay_cac_line(geometry.boundary.intersection(near))
+            front = (max(frontages, key=lambda part: part.length).interpolate(.5, normalized=True)
+                     if frontages else nearest_points(geometry, network)[0])
         else:
-            front = nearest_points(polygon.boundary, geometry.representative_point())[0]
+            shared = geometry.boundary.intersection(polygon.boundary)
+            frontages = lay_cac_line(shared)
+            if frontages:
+                front = max(frontages, key=lambda part: part.length).interpolate(.5, normalized=True)
+            else:
+                front = nearest_points(polygon.boundary, geometry.representative_point())[0]
         if context.branch_count:
             measure, branch_order, on_line, dx, dy = _network_position(
                 front, context.network_edges)

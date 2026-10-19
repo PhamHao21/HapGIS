@@ -17,6 +17,13 @@ Dữ liệu chỉ có tenDuong:
 - Trường tenHem để trống toàn bộ ở một lớp (lớp kia không có tenHem) được bỏ qua thay vì chặn vì sai schema;
   giao diện tải cây tuyến và chạy như dữ liệu chỉ có tenDuong.
 
+Hẻm dạng tim đường (polyline) - thử nghiệm:
+- Hẻm và đường cha nhận LineString/MultiLineString; hẻm tim dùng được cả với đường cha polygon.
+- Miệng hẻm là đầu tim gần đường cha nhất (tối đa 20 m) và phải gần hơn hẳn các đầu khác; mơ hồ thì chặn.
+- Mạng hẻm phân nhánh đánh theo khoảng cách từ miệng như chế độ polygon; không tỉa râu ở hẻm.
+- Bộ Châu Văn Liêm (Quyết Thắng + 20 hẻm, tim dựng từ polygon): cả 20 hẻm tìm đúng miệng, 412/412 thửa có số;
+  409/412 cùng bên với chế độ polygon (2 thửa chế độ tim đúng hình học hơn, 1 thửa kẹp giữa hai nhánh).
+
 Kiểm tra thửa đè lên mặt đường:
 - Chặn chạy khi tâm thửa nằm trong polygon đường cùng tuyến hoặc thửa bị đường cắt làm nhiều phần.
 - Cảnh báo khi thửa lấn quá 25% diện tích lên mặt đường cùng tuyến.
