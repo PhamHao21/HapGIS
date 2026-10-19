@@ -1,5 +1,5 @@
 ============================================================
-HAPGIS v1.1
+HAPGIS v1.2
 CÔNG CỤ ĐÁNH SỐ NHÀ TỰ ĐỘNG
 ============================================================
 
@@ -110,10 +110,10 @@ QUY TẮC HẺM
   Nguồn: https://congbao.cdnchinhphu.vn/180507251028987904/2026/3/24/cong-bao-so-159-ngay-25-03-47073_1774343631_signed.pdf
 
 5. PHIÊN BẢN
-HAPGIS v1.1
+HAPGIS v1.2
 
 6. PHẠM VI KIỂM THỬ
-Phiên bản 1.1 đã được kiểm thử trên bộ dữ liệu hiện tại của dự án.
+Phiên bản 1.2 đã được kiểm thử trên bộ dữ liệu hiện tại của dự án (Phong Điền, Châu Văn Liêm).
 Một số hình học đặc biệt như vòng xuyến / vòng xoay chưa được kiểm thử đầy đủ.
 Nhánh đánh hẻm có kiểm thử tổng hợp cho nhiều hướng, hẻm rẽ góc/chữ U, mạng phân nhánh,
 hai đầu thông đường, polygon nhiều mảnh liền nhau, tọa độ lớn, lỗi hình học/miệng hẻm và xuất GPKG/Shapefile.

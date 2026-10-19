@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 echo ============================================================
-echo HAPGIS v1.1 - BUILD RELEASE
+echo HAPGIS v1.2 - BUILD RELEASE
 echo ============================================================
 
 if not exist ".venv\Scripts\python.exe" (

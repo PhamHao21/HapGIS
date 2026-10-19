@@ -21,7 +21,7 @@ from route_catalog import FIELD_ALLEY
 from alley_numbering import route_preview
 
 APP_NAME = "HAPGIS"
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 APP_FULL_NAME = f"{APP_NAME} v{APP_VERSION}"
 ctk.set_appearance_mode("Light")
 ctk.set_default_color_theme("blue")
