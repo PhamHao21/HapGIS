@@ -501,6 +501,69 @@ def kiem_tra_nguon(house_path, house_layer, road_path, road_layer, tuyen="", rou
                             doc_nguon(road_path, road_layer), tuyen, route_keys)
 
 
+# Trường thuộc tính thửa đất theo quy định dữ liệu đầu ra, đúng thứ tự.
+TRUONG_THUA_DAU_RA = [
+    "object_ID", "maBuuChinh", "maDinhDanhThua", "soNhaHienThi", "tenNgach", "tenHem",
+    "tenDuong", "tenThon", "maTinh", "maXa", "tenTinh", "tenXa", "tenChuHo",
+    "soPhatHanhGCN", "tenToaNha", "loaiCongTrinh", "huongNha", "toaDoX", "toaDoY",
+    "traiPhai", "thuTuDiaChi", "dienTich",
+]
+
+
+def _o_trong(series):
+    return series.isna() | (series.astype(str).str.strip() == "")
+
+
+def _dien_cho_trong(series, values, digits):
+    """Fill only blank cells; numeric columns stay numeric, text columns get text."""
+    blank = _o_trong(series)
+    if not blank.any():
+        return series
+    filled = series.where(~blank)
+    numeric = pd.to_numeric(filled, errors="coerce")
+    if numeric.notna().sum() == filled.notna().sum():
+        return numeric.where(~blank, values.round(digits)).astype(float)
+    return series.where(~blank, values.round(digits).map(lambda v: f"{v:.{digits}f}"))
+
+
+def doc_object_id(path, layer=None):
+    """FID/OBJECTID của từng đối tượng nguồn, cùng thứ tự với doc_nguon; None nếu không đọc được."""
+    try:
+        ids = pyogrio.read_dataframe(path, columns=[], read_geometry=False, fid_as_index=True,
+                                     **({"layer": layer} if layer else {})).index
+    except Exception:
+        return None
+    return list(ids)
+
+
+def chuan_hoa_truong_dau_ra(out):
+    """
+    Đủ các trường thửa đất theo quy định (TRUONG_THUA_DAU_RA), đúng thứ tự.
+
+    Giữ nguyên giá trị nguồn; chỉ điền chỗ trống tính được từ hình học:
+    toaDoX/toaDoY = tâm thửa (centroid; thửa lõm có tâm nằm ngoài thì lấy một
+    điểm trong thửa), X = Easting, Y = Northing của CRS dữ liệu; dienTich = diện
+    tích hình học (m²); object_ID = thứ tự 1..n nếu nguồn không có. Các trường
+    khác của nguồn được giữ, xếp sau.
+    """
+    out = out.copy()
+    for field in TRUONG_THUA_DAU_RA:
+        if field not in out.columns:
+            out[field] = None
+    if _o_trong(out["object_ID"]).all():
+        out["object_ID"] = range(1, len(out) + 1)
+    tam = out.geometry.centroid
+    diem = gpd.GeoSeries(
+        np.where(out.geometry.intersects(tam), tam.values, out.geometry.representative_point().values),
+        index=out.index, crs=out.crs)
+    out["toaDoX"] = _dien_cho_trong(out["toaDoX"], diem.x, 3)
+    out["toaDoY"] = _dien_cho_trong(out["toaDoY"], diem.y, 3)
+    out["dienTich"] = _dien_cho_trong(out["dienTich"], out.geometry.area, 1)
+    geometry = out.geometry.name
+    rest = [c for c in out.columns if c not in TRUONG_THUA_DAU_RA and c != geometry]
+    return out[TRUONG_THUA_DAU_RA + rest + [geometry]]
+
+
 def luu_ket_qua(
     out_gdf,
     out_path,
@@ -585,6 +648,11 @@ def chay_danh_so(
 
     ghi(f"Đã đọc {len(houses)} thửa.")
 
+    if "object_ID" not in houses.columns:
+        object_ids = doc_object_id(house_path, house_layer)
+        if object_ids is not None and len(object_ids) == len(houses):
+            houses["object_ID"] = object_ids
+
     # ================================
     # ĐỌC ĐƯỜNG
     # ================================
@@ -648,6 +716,8 @@ def chay_danh_so(
     # ================================
 
     ghi("Đang ghi dữ liệu kết quả...")
+
+    out = chuan_hoa_truong_dau_ra(out)
 
     luu_ket_qua(
         out,
