@@ -3575,6 +3575,10 @@ def danh_so_lai_theo_logic_chinh(
 
     cac_cum_id = sorted(int(v) for v in group["_cumThua"].dropna().unique().tolist())
 
+    # So nha dem tiep qua cac cum (cum da sap theo chieu tuyen): mot tuyen
+    # khong duoc co hai thua cung so. Cum chi con dung de sap thu tu.
+    da_danh = {GT_TRAI: 0, GT_PHAI: 0}
+
     for cum_id in cac_cum_id:
         nhom_cum = group[group["_cumThua"] == cum_id].copy()
 
@@ -3620,7 +3624,7 @@ def danh_so_lai_theo_logic_chinh(
 
             for hang, idx in enumerate(
                 thu_tu_idx,
-                start=1,
+                start=da_danh[ben] + 1,
             ):
                 group.at[
                     idx,
@@ -3635,6 +3639,8 @@ def danh_so_lai_theo_logic_chinh(
                 ] = (
                     2 * hang - 1 if la_trai else 2 * hang
                 )
+
+            da_danh[ben] += len(thu_tu_idx)
 
     return group
 
