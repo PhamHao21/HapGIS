@@ -23,6 +23,8 @@ CORE_VERSION = "1.2"
 
 import heapq
 import math
+
+import numpy as np
 import os
 
 import pandas as pd
@@ -30,7 +32,7 @@ import geopandas as gpd
 
 import shapely
 from shapely.geometry import Point, LineString
-from shapely.ops import linemerge, nearest_points
+from shapely.ops import linemerge, nearest_points, substring
 
 # ============================================================
 # CAU HINH
@@ -1358,6 +1360,11 @@ def _cac_cum_sau_khi_cat_mst(adj, edges, nguong):
     return cac_cum, adj_cat
 
 
+def la_che_do_tim(group):
+    """Nhom thua duoc do theo tim duong (polyline), khong theo polygon mat duong."""
+    return "_cachChieu" in group.columns and bool((group["_cachChieu"] == "TIM_DUONG").all())
+
+
 def chia_cum_thua_theo_mat_duong(group):
     """
     Chia cum bang CHINH diem mat duong cua cac thua.
@@ -1396,6 +1403,29 @@ def chia_cum_thua_theo_mat_duong(group):
         return max(diem_so_huong(diem[idx], group.loc[idx, COL_HUONG]) for idx in comp)
 
     cac_cum.sort(key=score_cum, reverse=True)
+
+    # Cac cum cung nam chu yeu tren MOT reference line: doi cho voi nhau theo
+    # chainage (cung chieu thu tu trong cum), giu nguyen vi tri so voi cum
+    # cua manh khac. Huong tong quat sai voi tuyen uon chu U.
+    def vi_tri_doc_tuyen(comp):
+        manh = group.loc[comp, "_manhDuong"].dropna()
+        if manh.empty:
+            return None, None
+        chinh = manh.mode().iloc[0]
+        do = group.loc[comp][group.loc[comp, "_manhDuong"] == chinh]["_measure"].dropna()
+        return chinh, (float(do.median()) if len(do) else None)
+
+    if len(cac_cum) > 1 and la_che_do_tim(group):
+        vi_tri = [vi_tri_doc_tuyen(comp) for comp in cac_cum]
+        theo_manh = {}
+        for i, (manh, do) in enumerate(vi_tri):
+            if manh is not None and do is not None:
+                theo_manh.setdefault(manh, []).append(i)
+        moi = list(cac_cum)
+        for slots in theo_manh.values():
+            for slot, i in zip(slots, sorted(slots, key=lambda k: vi_tri[k][1])):
+                moi[slot] = cac_cum[i]
+        cac_cum = moi
 
     mapping = {}
 
@@ -2504,7 +2534,7 @@ def _thanh_phan_tiep_giap(adj, ids=None):
     return comps
 
 
-def hau_kiem_ben_theo_tiep_giap(group, verbose=True):
+def hau_kiem_ben_theo_tiep_giap(group, verbose=True, tin_cay_giu_ben=None):
     """
     PASS 2A - SUA TRAI/PHAI LAC DAN.
 
@@ -2517,6 +2547,12 @@ def hau_kiem_ben_theo_tiep_giap(group, verbose=True):
 
     Day KHONG phai "thay so le roi ep qua ben chan".
     Sua FIELD side truoc, sau do danh so lai.
+
+    tin_cay_giu_ben: neu co, thua co _tinCayBen >= nguong nay giu nguyen ben
+    hinh hoc (che do tim: ben do bang dien tich hai phia tim da du tin cay,
+    con hang xom o cuoi duong cut thuong nam vong qua dau tim). Thua goc giua
+    hai doan tim (_gocNhanh) van theo hang xom: ben cua no so voi nhanh re
+    khong phai ben so voi tim chinh.
     """
     group = group.copy()
 
@@ -2582,6 +2618,13 @@ def hau_kiem_ben_theo_tiep_giap(group, verbose=True):
                     continue
 
                 if ben_hien_tai == ben_da_so:
+                    continue
+
+                if (
+                    tin_cay_giu_ben is not None
+                    and float(group.at[idx, "_tinCayBen"]) >= tin_cay_giu_ben
+                    and not bool(group.at[idx, "_gocNhanh"])
+                ):
                     continue
 
                 # Vote CHI TU HANG XOM TRUC TIEP.
@@ -3795,10 +3838,34 @@ def hau_kiem_thu_tu_theo_tiep_giap(
 
     blocks.sort(key=lambda z: z["viTri"])
 
+    if not la_che_do_tim(nhom):
+        ordered = []
+
+        for block in blocks:
+            ordered.extend(block["order"])
+
+        return ordered, blocks
+
+    # Che do tim: block nhieu thua van lien nhau; thua DON LE (khong tiep giap
+    # thua nao, vd. thua manh ve chong ranh) chen dung vi tri doc mat duong,
+    # sau thua cuoi cung dung truoc no trong thu tu co so, thay vi bi day ra
+    # sau ca block ma no nam xen giua.
     ordered = []
+    don_le = []
 
     for block in blocks:
-        ordered.extend(block["order"])
+        if block["soThua"] == 1:
+            don_le.extend(block["order"])
+        else:
+            ordered.extend(block["order"])
+
+    for idx in sorted(don_le, key=lambda k: rank.get(k, 10**12)):
+        r = rank.get(idx, 10**12)
+        vi_tri = 0
+        for i, khac in enumerate(ordered):
+            if rank.get(khac, 10**12) < r:
+                vi_tri = i + 1
+        ordered.insert(vi_tri, idx)
 
     return ordered, blocks
 
@@ -3819,6 +3886,14 @@ TIM_DUNG_SAI_NOI_M = 0.10
 TIM_RAU_TOI_DA_M = 15.0
 # Phan bien thua cach tim <= khoang cach gan nhat + nguong nay (m) la mat tien.
 MAT_TIEN_TIM_BAND_M = 0.5
+# Ben TRAI/PHAI o che do tim: so dien tich thua trong dai dem mot phia cua tim,
+# rong = khoang cach thua-tim + nguong nay (m).
+BEN_TIM_DAI_DEM_M = 8.0
+# Thua co do tin cay ben tu nguong nay tro len khong bi hau kiem tiep giap lat ben.
+BEN_TIM_TIN_CAY_GIU = 0.5
+# Thua cach mot doan tim khac khong qua (khoang cach toi doan cua no + nguong nay, m)
+# la thua goc o diem re nhanh.
+TIM_THUA_GOC_M = 1.0
 
 
 def kieu_hinh_hoc_tuyen(geometries):
@@ -4006,6 +4081,32 @@ def noi_chieu_cac_cum_tim(lines_theo_manh, cum, dem_thua):
     return lines_theo_manh
 
 
+def ben_theo_dai_dem_tim(geom, line, m_tim, d_min):
+    """
+    Ben TRAI/PHAI cua thua theo dien tich nam trong dai dem mot phia cua tim.
+
+    Dung doan tim quanh thua (khong chi tiep tuyen tai diem gan nhat) nen
+    on dinh o khuc gap va dinh goc nhon, noi huong tiep tuyen doi dot ngot.
+    Tra ve (ben, tin_cay) voi tin_cay = |trai - phai| / (trai + phai);
+    (None, 0) neu thua khong cham dai dem nao (vd. nam sau dau tim).
+    """
+    rong = d_min + BEN_TIM_DAI_DEM_M
+    minx, miny, maxx, maxy = geom.bounds
+    ban_kinh = math.hypot(maxx - minx, maxy - miny) + rong
+    doan = substring(line, max(0.0, m_tim - ban_kinh), min(line.length, m_tim + ban_kinh))
+    if doan.is_empty or doan.length <= 0:
+        return None, 0.0
+    try:
+        trai = geom.intersection(doan.buffer(rong, single_sided=True)).area
+        phai = geom.intersection(doan.buffer(-rong, single_sided=True)).area
+    except Exception:
+        return None, 0.0
+    tong = trai + phai
+    if tong <= 1e-9:
+        return None, 0.0
+    return (GT_TRAI if trai > phai else GT_PHAI), abs(trai - phai) / tong
+
+
 def do_thua_theo_tim(geom, line, huong):
     """
     Do 1 thua so voi tim duong da dinh huong.
@@ -4047,26 +4148,28 @@ def do_thua_theo_tim(geom, line, huong):
     vi_tri_bien = vi_tri_sap_xep_endpoint(line, diem_giua, m_giua)
     m_sap = vi_tri_sap_xep_endpoint(line, p, m_tim)
 
-    dx, dy = tangent_cuc_bo_on_dinh(line, m_tim)
+    side, tin_cay_ben = ben_theo_dai_dem_tim(geom, line, m_tim, d_min)
+    if side is None:
+        dx, dy = tangent_cuc_bo_on_dinh(line, m_tim)
 
-    try:
-        side_probe = geom.representative_point()
-    except Exception:
-        side_probe = geom.centroid
+        try:
+            side_probe = geom.representative_point()
+        except Exception:
+            side_probe = geom.centroid
 
-    wx = side_probe.x - p_tim.x
-    wy = side_probe.y - p_tim.y
-    cross = dx * wy - dy * wx
+        wx = side_probe.x - p_tim.x
+        wy = side_probe.y - p_tim.y
+        cross = dx * wy - dy * wx
 
-    norm_t = math.hypot(dx, dy)
-    norm_w = math.hypot(wx, wy)
-    if norm_t > 1e-12 and norm_w > 1e-12:
-        tin_cay_ben = min(1.0, abs(cross) / (norm_t * norm_w))
-    else:
-        tin_cay_ben = 0.0
-    tin_cay_ben *= 0.55 + 0.45 * max(0.0, min(1.0, float(do_song_song)))
+        norm_t = math.hypot(dx, dy)
+        norm_w = math.hypot(wx, wy)
+        if norm_t > 1e-12 and norm_w > 1e-12:
+            tin_cay_ben = min(1.0, abs(cross) / (norm_t * norm_w))
+        else:
+            tin_cay_ben = 0.0
+        tin_cay_ben *= 0.55 + 0.45 * max(0.0, min(1.0, float(do_song_song)))
 
-    side = GT_TRAI if cross > 0 else GT_PHAI
+        side = GT_TRAI if cross > 0 else GT_PHAI
 
     try:
         lech_bien = float(line.project(geom.centroid)) - m_giua
@@ -4586,6 +4689,19 @@ def process(houses, roads, verbose=True, reference_roads=None, alley_contexts=No
         for cot, khoa in COT_DO_THUA.items():
             group[cot] = [do[khoa] for do in do_list]
 
+        group["_gocNhanh"] = False
+        if kieu == KIEU_TIM and len(polys) > 1:
+            geoms = group.geometry.to_numpy()
+            khoang = np.column_stack([shapely.distance(geoms, line) for line in polys])
+            for vi_tri, idx in enumerate(group.index):
+                manh_idx = gan_manh.get(idx)
+                if manh_idx is None or not np.isfinite(khoang[vi_tri, manh_idx]):
+                    continue
+                khac = np.delete(khoang[vi_tri], manh_idx)
+                group.at[idx, "_gocNhanh"] = bool(
+                    len(khac) and np.nanmin(khac) <= khoang[vi_tri, manh_idx] + TIM_THUA_GOC_M
+                )
+
         group[COL_HUONG] = huong
 
         # ----------------------------------------------------
@@ -4601,6 +4717,7 @@ def process(houses, roads, verbose=True, reference_roads=None, alley_contexts=No
         group, adj_tiep_giap, ds_sua_ben = hau_kiem_ben_theo_tiep_giap(
             group,
             verbose=verbose,
+            tin_cay_giu_ben=BEN_TIM_TIN_CAY_GIU if kieu == KIEU_TIM else None,
         )
 
         # ====================================================
@@ -4815,6 +4932,7 @@ def process(houses, roads, verbose=True, reference_roads=None, alley_contexts=No
             "_canhMatTien",
             "_cachMatTien",
             "_tinCayBen",
+            "_gocNhanh",
             "_benHinhHoc",
             "_suaBen",
             "_suaCap",

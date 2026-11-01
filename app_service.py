@@ -32,6 +32,7 @@ from core_housenumber import (
     LOAI_TIM,
     TIM_DUNG_SAI_NOI_M,
     TIM_RAU_TOI_DA_M,
+    _bac_dinh,
     kieu_hinh_hoc_tuyen,
     kiem_tra_he_toa_do,
     phan_tich_tim_duong,
@@ -203,6 +204,13 @@ ROAD_OVERLAP_WARNING_RATIO = 0.25
 # Mảnh thửa nhỏ hơn tỷ lệ này sau khi trừ mặt đường được coi là sai số digitize, không tính là bị cắt.
 ROAD_CUT_MIN_PART_RATIO = 0.01
 OVERLAP_EXAMPLE_LIMIT = 5
+# Thửa cách tim cùng tuyến quá ngưỡng này (m) mà nằm sau đầu cụt của tim (hoặc sát tuyến khác):
+# bên TRÁI/PHẢI không xác định được.
+THUA_NGOAI_DAU_TIM_M = 30.0
+# Điểm gần nhất cách đầu cụt không quá ngưỡng này (m) thì coi là chính đầu cụt.
+DAU_TIM_DUNG_SAI_M = 0.5
+# Thửa xa tim tuyến mình mà cách đường tuyến khác không quá ngưỡng này (m) thì nghi ghi sai tuyến.
+THUA_SAT_TUYEN_KHAC_M = 10.0
 
 
 def _so_manh_dang_ke(geometries, areas):
@@ -292,6 +300,63 @@ def _la_hem(key, name):
         return True
 
 
+def _dau_cut(lines):
+    """MultiPoint các đầu mút chỉ thuộc một mảnh tim (đầu cụt, không phải điểm nối)."""
+    return shapely.MultiPoint([xy for xy, bac in _bac_dinh(lines).items() if bac == 1])
+
+
+def _thua_ngoai_dau_tim(houses, roads, house_keys, road_keys, positions, lines, dau_cut):
+    """
+    Cảnh báo thửa cách tim cùng tuyến hơn THUA_NGOAI_DAU_TIM_M mà nằm sau đầu cụt của tim,
+    hoặc sát tim một tuyến khác (trong THUA_SAT_TUYEN_KHAC_M). Thường do tenDuong của thửa
+    ghi sai hoặc tim tuyến còn thiếu đoạn; khi đó cả dãy thửa bị xếp chung một bên.
+    """
+    parcels = houses.geometry.to_numpy()[positions]
+    xa = shapely.distance(parcels, lines) > THUA_NGOAI_DAU_TIM_M
+    if not xa.any():
+        return None
+    gan_nhat = shapely.get_point(shapely.shortest_line(shapely.point_on_surface(parcels[xa]), lines[xa]), 1)
+    dau = np.array(dau_cut, dtype=object)[xa]
+    mask = np.zeros(len(positions), dtype=bool)
+    mask[np.flatnonzero(xa)] = ~shapely.is_empty(dau) & (shapely.distance(gan_nhat, dau) <= DAU_TIM_DUNG_SAI_M)
+
+    # Đường tuyến khác sát thửa: vừa là dấu hiệu, vừa gợi ý tuyến thật của dãy thửa.
+    road_pos = np.array([pos for pos, key in enumerate(road_keys) if key != ("", "")], dtype=int)
+    doc = {}
+    if len(road_pos):
+        road_geoms = roads.geometry.to_numpy()[road_pos]
+        idx_xa = np.flatnonzero(xa)
+        thua, duong = shapely.STRtree(road_geoms).query(parcels[idx_xa], predicate="dwithin",
+                                                         distance=THUA_SAT_TUYEN_KHAC_M)
+        for i, j in zip(idx_xa[thua], duong):
+            if road_keys.iloc[road_pos[j]] != house_keys.iloc[positions[i]]:
+                mask[i] = True
+                doc.setdefault(i, _ten_tuyen(roads.iloc[road_pos[j]]) or "đường không tên")
+    if not mask.any():
+        return None
+
+    nhom = {}
+    for i in np.flatnonzero(mask):
+        pos = positions[i]
+        item = nhom.setdefault(house_keys.iloc[pos], {"ten": _ten_tuyen(houses.iloc[pos]) or "không tên",
+                                                       "so": 0, "xa": 0.0, "doc": {}})
+        item["so"] += 1
+        item["xa"] = max(item["xa"], parcels[i].distance(lines[i]))
+        if i in doc:
+            item["doc"][doc[i]] = item["doc"].get(doc[i], 0) + 1
+    vi_du = []
+    for item in sorted(nhom.values(), key=lambda item: -item["so"])[:OVERLAP_EXAMPLE_LIMIT]:
+        text = f"{item['ten']}: {item['so']:,} thửa, xa nhất {item['xa']:,.0f} m"
+        if item["doc"]:
+            text += f", nằm dọc {max(item['doc'], key=item['doc'].get)}"
+        vi_du.append(text)
+    return (f"Thửa: {int(mask.sum()):,} thửa cách tim đường cùng tuyến hơn {THUA_NGOAI_DAU_TIM_M:.0f} m, "
+            f"nằm sau đầu cụt của tim hoặc sát đường tuyến khác. Tool vẫn đánh số nhưng bên TRÁI/PHẢI và "
+            f"thứ tự các thửa này không đúng (cả dãy có thể ra toàn số lẻ hoặc toàn số chẵn). Thường do "
+            f"tenDuong của thửa ghi sai, hoặc tim tuyến còn thiếu đoạn (đoạn đó đang mang tên tuyến khác). "
+            f"Ví dụ: {'; '.join(vi_du)}.")
+
+
 def kiem_tra_tim_duong(houses, roads, house_keys, road_keys, common):
     """
     Phân loại kiểu hình học từng tuyến và kiểm tra các tuyến vẽ bằng tim đường.
@@ -323,7 +388,7 @@ def kiem_tra_tim_duong(houses, roads, house_keys, road_keys, common):
         if geom is not None and not geom.is_empty and geom.geom_type in LOAI_POLYGON:
             thua_theo_tuyen.setdefault(key, []).append(geom)
 
-    tim_lines = {}
+    tim_lines, dau_cut = {}, {}
     nhanh, vong, roi, rong = [], [], [], []
     so_rau = 0
     for key in (key for key, value in kieu.items() if value == KIEU_TIM):
@@ -333,6 +398,7 @@ def kiem_tra_tim_duong(houses, roads, house_keys, road_keys, common):
             tim = phan_tich_tim_duong(geometries[vi_tri[key]], rau_toi_da=0)
             if tim["lines"]:
                 tim_lines[key] = shapely.union_all(tim["lines"])
+                dau_cut[key] = _dau_cut(tim["lines"])
             else:
                 rong.append(key)
             continue
@@ -349,8 +415,9 @@ def kiem_tra_tim_duong(houses, roads, house_keys, road_keys, common):
         if not cum_co_thua:
             continue
         # Chỉ xét các cụm tim có thửa; phần tim xa khu thửa không ảnh hưởng đánh số.
-        tim_lines[key] = shapely.union_all(
-            [line for line, cum in zip(tim["lines"], tim["cum"]) if cum in cum_co_thua])
+        lines = [line for line, cum in zip(tim["lines"], tim["cum"]) if cum in cum_co_thua]
+        tim_lines[key] = shapely.union_all(lines)
+        dau_cut[key] = _dau_cut(lines)
         if any(tim["lines"][i].is_closed for i in manh_co_thua):
             vong.append(key)
         if any(cum in cum_co_thua for cum in tim["nut_nhanh"]):
@@ -391,6 +458,10 @@ def kiem_tra_tim_duong(houses, roads, house_keys, road_keys, common):
                 errors.append(
                     f"Thửa: {int(crossed.sum()):,} thửa bị tim đường cùng tuyến cắt qua; tool không xác "
                     f"định được thửa nằm bên TRÁI hay PHẢI. Cần sửa tim hoặc ranh thửa. Ví dụ: {examples}.")
+            ngoai = _thua_ngoai_dau_tim(houses, roads, house_keys, road_keys, positions, lines,
+                                        [dau_cut[house_keys.iloc[pos]] for pos in positions])
+            if ngoai:
+                warnings.append(ngoai)
 
     counts = {value: sum(1 for k in kieu.values() if k == value) for value in (KIEU_POLYGON, KIEU_TIM)}
     counts["so_rau"] = so_rau
