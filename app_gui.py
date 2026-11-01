@@ -169,10 +169,6 @@ class AppDanhSoNha(ctk.CTk):
         toolbar.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 10))
         toolbar.grid_columnconfigure(0, weight=1)
         self.label(toolbar, "Đánh số nhà theo tuyến", 26, True).grid(row=0, column=0, sticky="w")
-        badge = self.label(toolbar, "  tenDuong · tenHem tùy chọn  ", 11, True,
-                           fg_color=SOFT, corner_radius=10, height=30)
-        badge.configure(text_color=PINK_INK)
-        badge.grid(row=0, column=1, rowspan=2, sticky="e")
 
         self.form = StableScrollableFrame(self.shell, fg_color="transparent", corner_radius=0,
                                           scrollbar_button_color=BORDER,
