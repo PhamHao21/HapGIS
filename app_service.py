@@ -24,6 +24,7 @@ from core_housenumber import (
     khoa_ten,
     ten_truong_an_toan_shp,
     xoa_shapefile_cu,
+    COL_SONHA,
     FIELD_ROUTE,
     KIEU_LAN,
     KIEU_POLYGON,
@@ -495,6 +496,7 @@ def kiem_tra_du_lieu(houses, roads, tuyen="", route_keys=None):
         return report
     report["house_count"], report["road_count"] = len(selected_h), len(selected_r)
     hierarchical = catalog["hierarchical"]
+    report["_hierarchical"] = hierarchical
     house_keys = route_key_series(selected_h, hierarchical)
     road_keys = route_key_series(selected_r, hierarchical)
     common = (set(house_keys) & set(road_keys)) - {("", "")}
@@ -633,6 +635,101 @@ def chuan_hoa_truong_dau_ra(out):
     geometry = out.geometry.name
     rest = [c for c in out.columns if c not in TRUONG_THUA_DAU_RA and c != geometry]
     return out[TRUONG_THUA_DAU_RA + rest + [geometry]]
+
+
+# Cột lý do cần rà lại từng thửa trên bản đồ (cách nhau "; "); trống = không có gì đáng nghi.
+COT_RA_SOAT = "canRaSoat"
+# Thửa góc: tuyến khác không xa thửa hơn tuyến của thửa quá GOC_CHENH_M (m), mặt giáp tuyến đó
+# trải dài ít nhất GOC_MAT_TIEN_M (m) dọc tuyến, và hai tuyến gặp nhau cách thửa không quá
+# tổng hai khoảng cách thửa-đường + GOC_NGA_M (m) (đường song song phía sau không tính).
+GOC_CHENH_M = 2.0
+GOC_MAT_TIEN_M = 5.0
+GOC_NGA_M = 5.0
+# Đoạn ranh thửa cách đường không quá khoảng cách thửa-đường + ngưỡng này (m) là mặt giáp đường.
+MAT_GIAP_DUNG_SAI_M = 1.5
+
+
+def _do_dai_mat_giap(parcel, road, khoang_cach):
+    """Độ dài (m) đo dọc đường của phần ranh thửa nằm sát đường; 0 nếu chỉ chạm một điểm (đầu tim)."""
+    band = parcel.boundary.intersection(road.buffer(khoang_cach + MAT_GIAP_DUNG_SAI_M))
+    points = shapely.points(shapely.get_coordinates(band))
+    if len(points) < 2:
+        return 0.0
+    ref = road if road.geom_type in LOAI_TIM else road.boundary
+    measures = shapely.line_locate_point(ref, points)
+    return float(measures.max() - measures.min())
+
+
+def danh_dau_can_ra_soat(out, roads, hierarchical):
+    """
+    Lý do cần rà lại của từng thửa kết quả (Series chuỗi, rỗng nếu không có). Chỉ đọc hình học:
+    - tenDuong không có đường cùng tên, hoặc chưa có số nhà;
+    - cách tuyến của mình hơn THUA_NGOAI_DAU_TIM_M: nằm dọc tuyến khác, sau đầu cụt tim,
+      hoặc không có mặt tiền (thửa phía sau);
+    - thửa góc: có mặt tiền thứ hai trên tuyến khác (số theo tuyến ghi ở tenDuong).
+    """
+    ly_do = [[] for _ in range(len(out))]
+    house_keys = route_key_series(out, hierarchical)
+    road_keys = route_key_series(roads, hierarchical)
+    road_geoms = roads.geometry.to_numpy()
+    co_hinh = np.array([g is not None and not g.is_empty for g in road_geoms], dtype=bool)
+    road_pos = np.flatnonzero(co_hinh & road_keys.map(lambda key: key != ("", "")).to_numpy())
+
+    vi_tri = {}
+    for pos in road_pos:
+        vi_tri.setdefault(road_keys.iloc[pos], []).append(pos)
+    tuyen, dau_cut, ten = {}, {}, {}
+    for key, pos in vi_tri.items():
+        geoms = road_geoms[pos]
+        tuyen[key] = shapely.union_all(geoms)
+        ten[key] = _ten_tuyen(roads.iloc[pos[0]]) or "đường không tên"
+        if kieu_hinh_hoc_tuyen(geoms) == KIEU_TIM:
+            lines = phan_tich_tim_duong(geoms, rau_toi_da=0)["lines"]
+            if lines:
+                dau_cut[key] = _dau_cut(lines)
+    tree = shapely.STRtree(road_geoms[road_pos])
+
+    so_nha = out[COL_SONHA] if COL_SONHA in out.columns else pd.Series(None, index=out.index)
+    chua_so = _o_trong(so_nha).to_numpy()
+    parcels = out.geometry.to_numpy()
+    for i, (parcel, key) in enumerate(zip(parcels, house_keys)):
+        if key not in tuyen:
+            if key != ("", ""):
+                ly_do[i].append("Không có đường cùng tên")
+            elif chua_so[i]:
+                ly_do[i].append("Chưa có số nhà")
+            continue
+        if chua_so[i]:
+            ly_do[i].append("Chưa có số nhà")
+        if parcel is None or parcel.is_empty:
+            continue
+        ten_minh = ten[key]
+        d_minh = parcel.distance(tuyen[key])
+        khac = []
+        for j in tree.query(parcel, predicate="dwithin", distance=THUA_SAT_TUYEN_KHAC_M):
+            pos = road_pos[j]
+            if road_keys.iloc[pos] != key:
+                khac.append((parcel.distance(road_geoms[pos]), pos))
+        khac.sort()
+        if d_minh > THUA_NGOAI_DAU_TIM_M:
+            if khac:
+                ly_do[i].append(f"Cách {ten_minh} {d_minh:.0f} m, nằm dọc {ten[road_keys.iloc[khac[0][1]]]}")
+            elif key in dau_cut and not dau_cut[key].is_empty and shapely.distance(
+                    shapely.get_point(shapely.shortest_line(parcel.point_on_surface(), tuyen[key]), 1),
+                    dau_cut[key]) <= DAU_TIM_DUNG_SAI_M:
+                ly_do[i].append(f"Cách {ten_minh} {d_minh:.0f} m, nằm sau đầu cụt tim")
+            else:
+                ly_do[i].append(f"Cách {ten_minh} {d_minh:.0f} m, không có mặt tiền")
+            continue
+        for d_khac, pos in khac:
+            if d_khac > d_minh + GOC_CHENH_M:
+                continue
+            nga = road_geoms[pos].intersection(tuyen[key].buffer(MAT_GIAP_DUNG_SAI_M))
+            if (not nga.is_empty and parcel.distance(nga) <= d_minh + d_khac + GOC_NGA_M
+                    and _do_dai_mat_giap(parcel, road_geoms[pos], d_khac) >= GOC_MAT_TIEN_M):
+                ly_do[i].append(f"Thửa góc, giáp cả {ten[road_keys.iloc[pos]]}")
+                break
+    return pd.Series(["; ".join(items) for items in ly_do], index=out.index, dtype="object")
 
 
 def luu_ket_qua(
@@ -781,6 +878,11 @@ def chay_danh_so(
     )
 
     ghi(f"Đã xử lý {len(out)} đối tượng.")
+
+    out[COT_RA_SOAT] = danh_dau_can_ra_soat(out, all_roads, report["_hierarchical"])
+    so_ra_soat = int((out[COT_RA_SOAT] != "").sum())
+    if so_ra_soat:
+        ghi(f"{so_ra_soat:,} thửa cần rà lại trên bản đồ (lọc cột {COT_RA_SOAT} khác trống).")
 
     # ================================
     # LƯU

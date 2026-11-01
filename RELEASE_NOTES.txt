@@ -1,5 +1,16 @@
 HAPGIS v1.2 - RELEASE NOTES
 
+Cột rà soát canRaSoat:
+- Đầu ra có thêm cột canRaSoat ghi lý do từng thửa cần rà lại: nằm dọc tuyến khác, nằm sau đầu cụt tim,
+  cách tuyến hơn 30 m không có mặt tiền, thửa góc ngã tư, không có đường cùng tên, chưa có số nhà.
+  Chỉ đọc hình học, không đổi số nhà. Nhật ký chạy báo số thửa cần rà.
+
+Tim đường - bên TRÁI/PHẢI và thứ tự:
+- Bên TRÁI/PHẢI xác định theo diện tích thửa trong dải đệm hai bên đoạn tim quanh thửa (đúng cả chỗ tim
+  vẽ gãy ngược); thửa cuối hẻm cụt không bị thửa hàng xóm bọc vòng lật bên.
+- Cụm thửa cách xa trên đường cong chữ U xếp theo vị trí dọc tim; thửa lẻ không giáp ai giữ đúng chỗ trong dãy.
+- Kiểm tra dữ liệu cảnh báo thửa cách tim cùng tuyến hơn 30 m nằm sau đầu cụt tim hoặc dọc tuyến khác.
+
 Đường chính dạng tim đường (polyline) - thử nghiệm:
 - Lớp đường nhận thêm LineString/MultiLineString cho đường chính; polygon mặt đường vẫn chạy như cũ.
 - Tool tự nhận kiểu theo từng tuyến; giao diện hiển thị kiểu layer, báo cáo ghi số tuyến mỗi kiểu.
