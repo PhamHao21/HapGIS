@@ -81,6 +81,13 @@ GeoPackage (.gpkg) được khuyến nghị vì giữ đầy đủ tên trườn
 soNhaHienThi có kiểu chuỗi: số thường là "1", số trong hẻm là "236/1".
 Thửa không có tuyến tương ứng vẫn để trống số nhà, không biến thành "None" hay "nan".
 traiPhai và thuTuDiaChi giữ ý nghĩa hiện tại; huong của hẻm là MIENG-HEM.
+canRaSoat (sau 22 trường quy định) ghi lý do thửa cần rà lại trên bản đồ, trống = không có gì đáng nghi:
+  "Cách <tuyến> N m, nằm dọc <tuyến khác>"  -> thửa nằm dọc đường khác, thường ghi sai tenDuong;
+  "Cách <tuyến> N m, nằm sau đầu cụt tim"   -> tim đường thiếu đoạn hoặc thửa ghi sai tenDuong;
+  "Cách <tuyến> N m, không có mặt tiền"     -> thửa phía sau, số chen vào dãy mặt tiền;
+  "Thửa góc, giáp cả <tuyến khác>"          -> thửa ngã tư, số theo tuyến ghi ở tenDuong;
+  "Không có đường cùng tên" / "Chưa có số nhà".
+Trong ArcGIS: Select By Attributes canRaSoat <> '' để lọc các thửa này.
 
 QUY TẮC HẺM
 - Schema khuyến nghị: đường chính tenDuong=Đường A, tenHem trống; hẻm dùng tenDuong=Đường A,
