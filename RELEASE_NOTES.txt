@@ -10,6 +10,9 @@ Tim đường - bên TRÁI/PHẢI và thứ tự:
   vẽ gãy ngược); thửa cuối hẻm cụt không bị thửa hàng xóm bọc vòng lật bên.
 - Cụm thửa cách xa trên đường cong chữ U xếp theo vị trí dọc tim; thửa lẻ không giáp ai giữ đúng chỗ trong dãy.
 - Kiểm tra dữ liệu cảnh báo thửa cách tim cùng tuyến hơn 30 m nằm sau đầu cụt tim hoặc dọc tuyến khác.
+- Hướng đánh số (4 hướng) của tuyến tim lấy theo 2 điểm xa nhất trên chính đường tim, không theo 2 thửa
+  xa nhất: thửa lớn hoặc lệch một bên không còn kéo nghiêng trục qua ngưỡng (ví dụ H106 đúng Bắc→Nam).
+  Đường polygon giữ nguyên cách cũ.
 
 Đường chính dạng tim đường (polyline) - thử nghiệm:
 - Lớp đường nhận thêm LineString/MultiLineString cho đường chính; polygon mặt đường vẫn chạy như cũ.
