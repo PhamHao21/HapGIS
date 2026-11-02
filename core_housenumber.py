@@ -31,7 +31,7 @@ import pandas as pd
 import geopandas as gpd
 
 import shapely
-from shapely.geometry import Point, LineString
+from shapely.geometry import Point, LineString, MultiPoint
 from shapely.ops import linemerge, nearest_points, substring
 
 # ============================================================
@@ -687,21 +687,52 @@ def hai_diem_xa_nhat(points):
     return best[1], best[2]
 
 
-def xac_dinh_huong(group, lines):
+def diem_xa_nhat_tren_tim(lines):
+    """
+    2 dinh xa nhau nhat cua cac doan tim (chi xet dinh bao loi cho nhanh).
+    """
+    coords = []
+
+    for line in lines:
+        if line is None or line.is_empty:
+            continue
+
+        coords.extend(line.coords)
+
+    if len(coords) < 2:
+        return []
+
+    hull = MultiPoint(coords).convex_hull
+
+    if hull.geom_type == "Polygon":
+        return [Point(c) for c in hull.exterior.coords[:-1]]
+
+    return [Point(c) for c in hull.coords]
+
+
+def xac_dinh_huong(group, lines, theo_tim=False):
     """
     Uu tien huong tong quat tu 2 diem thua xa nhau nhat.
+    Tuyen nhap tim duong: lay theo 2 dinh xa nhat cua chinh tim duong,
+    vi thua lon/lech mot ben co the keo nghieng truc qua nguong 4 huong.
     Neu khong du diem thi fallback ve reference line dai nhat.
     """
     points = []
 
-    for geom in group.geometry:
-        if geom is None or geom.is_empty:
-            continue
+    if theo_tim:
+        points = diem_xa_nhat_tren_tim(lines)
 
-        try:
-            points.append(geom.representative_point())
-        except Exception:
-            points.append(geom.centroid)
+    if len(points) < 2:
+        points = []
+
+        for geom in group.geometry:
+            if geom is None or geom.is_empty:
+                continue
+
+            try:
+                points.append(geom.representative_point())
+            except Exception:
+                points.append(geom.centroid)
 
     p1, p2 = hai_diem_xa_nhat(points)
     goc = None
@@ -4595,6 +4626,7 @@ def process(houses, roads, verbose=True, reference_roads=None, alley_contexts=No
             huong, goc = xac_dinh_huong(
                 group,
                 list(lines_theo_manh.values()),
+                theo_tim=(kieu == KIEU_TIM),
             )
         except Exception as e:
             if verbose:
