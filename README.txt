@@ -116,8 +116,53 @@ QUY TẮC HẺM
   VBHN 05/VBHN-BXD ngày 13/02/2026, hợp nhất Thông tư 08/2024/TT-BXD và sửa đổi tại Thông tư 09/2025/TT-BXD.
   Nguồn: https://congbao.cdnchinhphu.vn/180507251028987904/2026/3/24/cong-bao-so-159-ngay-25-03-47073_1774343631_signed.pdf
 
+ĐIỂM ĐẦU VÀ CHIỀU ĐÁNH SỐ
+Tool chỉ chọn điểm đầu; số tăng dần dọc tuyến, hết thửa ở đâu thì đó là cuối tuyến.
+
+Đường chính (theo 4 hướng):
+- Lấy 2 điểm xa nhau nhất của tuyến:
+    tuyến tim đường : 2 đỉnh xa nhất trên các đoạn tim có thửa;
+    tuyến polygon   : 2 thửa xa nhất (điểm đại diện bên trong thửa).
+- Góc nghiêng giữa 2 điểm quyết định hướng và điểm đầu (góc đo từ trục Đông, ngược chiều kim đồng hồ):
+    dưới 22,5° hoặc từ 157,5°  -> Đông→Tây (D-T)           , bắt đầu đầu xa nhất phía Đông;
+    22,5° đến dưới 67,5°       -> Đông Bắc→Tây Nam (DB-TN)  , bắt đầu đầu xa nhất phía Đông Bắc;
+    67,5° đến dưới 112,5°      -> Bắc→Nam (B-N)             , bắt đầu đầu xa nhất phía Bắc;
+    112,5° đến dưới 157,5°     -> Đông Nam→Tây Bắc (DN-TB)  , bắt đầu đầu xa nhất phía Đông Nam.
+  Kết quả ghi ở cột huong.
+- Chiếu từng thửa lên tim/trục đường, đo khoảng cách từ điểm đầu rồi đánh số tăng dần.
+  Theo chiều đi: bên trái số lẻ 1, 3, 5…; bên phải số chẵn 2, 4, 6…
+- Tim đứt nhiều cụm được nối nối tiếp theo chiều tuyến.
+- Lưu ý ngưỡng: tuyến có góc sát 22,5° / 67,5° / 112,5° / 157,5° chỉ lệch 1° là đổi hướng, và điểm đầu
+  có thể nhảy sang đầu kia (rõ nhất quanh 112,5°: Bắc→Nam đổi thành Đông Nam→Tây Bắc). Đường cong
+  chữ L, chữ U nên rà lại cột huong trên bản đồ.
+
+Hẻm (không dùng 4 hướng, luôn bắt đầu từ miệng hẻm):
+- Nhận diện hẻm: có trường tenHem thì tuyến có tenHem khác trống là hẻm, đường cha = tenDuong;
+  không có tenHem thì tên tenDuong bắt đầu bằng Hẻm/Hem là hẻm. Tên như H106 KHÔNG được coi là hẻm.
+- Hẻm polygon: tool dựng tim giữa của polygon hẻm, tìm đoạn polygon hẻm chạm polygon đường cha
+  (đoạn tiếp giáp chung). Lấy điểm giữa của đoạn tiếp giáp đó; đầu tim hẻm gần điểm này nhất là miệng.
+  Chạm đường cha ở giữa thân hẻm (không phải ở đầu) thì bị chặn.
+- Hẻm tim đường: đầu tim gần đường cha nhất là miệng, phải cách đường cha tối đa 20 m.
+  Có đầu tim khác cũng gần tương đương (≤ 2 lần khoảng cách đó + 2 m) thì bị chặn.
+- Cuối hẻm là chỗ sâu nhất; hẻm phân nhánh đánh theo quãng đường đi từ miệng vào trên từng nhánh.
+  Trái lẻ, phải chẵn theo chiều đi từ miệng vào trong.
+
+Hẻm thông hai đường (hai đầu đều chạm đường lớn) - miệng hẻm chọn theo thứ tự:
+  1. Có trường tenHem: miệng là đầu chạm đường ghi ở tenDuong; đường bên kia không được xét.
+  2. Không có tenHem nhưng tên ghi đường cha (vd. Hẻm 17 Đường Quyết Thắng): miệng ở đầu chạm
+     Quyết Thắng.
+  3. Không ghi đường cha:
+     - hẻm polygon: so bề rộng mặt cắt hai đường tại hai đầu, miệng ở phía đường rộng hơn. Hai đường
+       rộng gần bằng nhau (lệch ≤ 5% hoặc ≤ 10 cm), hẻm giao xiên hoặc mặt cắt không đo ổn định
+       thì bị chặn;
+     - hẻm tim: không so mặt cắt; đầu tim gần đường lớn (trong 20 m) hơn hẳn là miệng, hai đầu gần
+       tương đương (≤ 2 lần khoảng cách + 2 m) thì bị chặn.
+  Cả hai đầu cùng chạm một đường cha ghi trong tên/tenDuong cũng bị chặn.
+  => Cách chắc chắn nhất: dùng trường tenHem và ghi tenDuong là đường muốn làm miệng hẻm.
+
 5. PHIÊN BẢN
 HAPGIS v1.2
+Tác giả: Phạm Gia Hào
 
 6. PHẠM VI KIỂM THỬ
 Phiên bản 1.2 đã được kiểm thử trên bộ dữ liệu hiện tại của dự án (Phong Điền, Châu Văn Liêm).

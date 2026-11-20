@@ -143,12 +143,19 @@ class AppDanhSoNha(ctk.CTk):
         header = ctk.CTkFrame(self.shell, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=6, pady=(2, 10))
         header.grid_columnconfigure(1, weight=1)
-        emblem = ctk.CTkFrame(header, width=44, height=44, corner_radius=13, fg_color=ACCENT)
-        emblem.grid(row=0, column=0, rowspan=2, padx=(0, 12))
-        emblem.grid_propagate(False)
-        mark = self.label(emblem, "H", 26, True)
-        mark.configure(text_color="#FFFFFF", anchor="center")
-        mark.place(relx=.5, rely=.5, anchor="center")
+        try:
+            from PIL import Image
+            self.logo = ctk.CTkImage(Image.open(resource_path("assets/hapgis_logo.png")), size=(44, 44))
+            ctk.CTkLabel(header, text="", image=self.logo, width=44, height=44).grid(
+                row=0, column=0, rowspan=2, padx=(0, 12))
+        except Exception:
+            # Thieu Pillow hoac file logo: giu o chu H cu.
+            emblem = ctk.CTkFrame(header, width=44, height=44, corner_radius=13, fg_color=ACCENT)
+            emblem.grid(row=0, column=0, rowspan=2, padx=(0, 12))
+            emblem.grid_propagate(False)
+            mark = self.label(emblem, "H", 26, True)
+            mark.configure(text_color="#FFFFFF", anchor="center")
+            mark.place(relx=.5, rely=.5, anchor="center")
         self.label(header, "HAPGIS", 23, True).grid(row=0, column=1, sticky="w")
         sub = self.label(header, "Không gian địa chỉ · Address Studio", 11)
         sub.configure(text_color=MUTED)

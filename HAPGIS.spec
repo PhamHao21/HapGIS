@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('assets/hapgis.ico', 'assets')]
+datas = [('assets/hapgis.ico', 'assets'), ('assets/hapgis_logo.png', 'assets')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('customtkinter')

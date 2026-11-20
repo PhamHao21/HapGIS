@@ -15,7 +15,7 @@ if not exist ".venv\Scripts\python.exe" (
 
 call ".venv\Scripts\activate.bat"
 
-python -m pip install pyinstaller
+python -m pip install pyinstaller pillow
 if errorlevel 1 goto :fail
 
 if exist "build" rmdir /s /q "build"
@@ -30,6 +30,7 @@ python -m PyInstaller ^
   --icon "assets\hapgis.ico" ^
   --version-file "version_info.txt" ^
   --add-data "assets\hapgis.ico;assets" ^
+  --add-data "assets\hapgis_logo.png;assets" ^
   --collect-all customtkinter ^
   --collect-all geopandas ^
   --collect-all pyogrio ^

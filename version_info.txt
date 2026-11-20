@@ -22,7 +22,8 @@ VSVersionInfo(
                         StringStruct('OriginalFilename', 'HAPGIS.exe'),
                         StringStruct('ProductName', 'HAPGIS'),
                         StringStruct('ProductVersion', '1.2.0'),
-                        StringStruct('LegalCopyright', 'HAPGIS'),
+                        StringStruct('LegalCopyright', 'Copyright (c) 2026 Pham Gia Hao'),
+                        StringStruct('Comments', 'Tac gia: Pham Gia Hao'),
                     ]
                 )
             ]
