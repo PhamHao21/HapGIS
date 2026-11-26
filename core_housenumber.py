@@ -26,6 +26,7 @@ import math
 
 import numpy as np
 import os
+import re
 
 import pandas as pd
 import geopandas as gpd
@@ -62,6 +63,11 @@ COL_BEN = "traiPhai"
 COL_STT = "thuTuDiaChi"
 COL_SONHA = "soNhaHienThi"
 COL_HUONG = "huong"
+
+# So nha co san (tuy chon): thua co gia tri giu nguyen so, cac thua khac danh lien
+# tu diem dau, nhay qua moc. Ly do moc khong ap dung duoc ghi vao COL_LY_DO_SO_CU.
+COL_SO_CU = "soNhaCu"
+COL_LY_DO_SO_CU = "_lyDoSoCu"
 
 GT_TRAI = "TRAI"
 GT_PHAI = "PHAI"
@@ -3630,6 +3636,96 @@ def hau_kiem_hoan_doi_cap_cuoi_sau_danh_so(
     return group, da_sua
 
 
+def doc_so_nha_cu(value, prefix=""):
+    """
+    So nguyen duong tu soNhaCu, hoac (None, ly do).
+
+    Duong chinh: "65" / 65 / 65.0. Hem: "236/5" (tien to phai khop) hoac "5".
+    """
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return None, ""
+    text = str(value).strip()
+    if not text:
+        return None, ""
+    so = text
+    if "/" in text:
+        dau, so = (part.strip() for part in text.rsplit("/", 1))
+        if not prefix:
+            return None, f"soNhaCu '{text}' dạng số hẻm nhưng thửa thuộc đường chính"
+        if dau != prefix:
+            return None, f"soNhaCu '{text}' không thuộc hẻm {prefix}"
+    match = re.fullmatch(r"(\d+)(?:\.0+)?", so)
+    if not match or int(match.group(1)) <= 0:
+        return None, f"soNhaCu '{text}' không phải số nguyên dương"
+    return int(match.group(1)), ""
+
+
+def ap_dung_so_nha_cu(group, prefix=""):
+    """
+    Giu so nha co san (COL_SO_CU) lam moc, danh lai phan con lai theo cach "don dau".
+
+    Moi ben di tu diem dau theo COL_STT: thua co moc giu so moc, thua khac nhan so
+    ke tiep cung chan/le (1, 3, 5... hoac 2, 4, 6...), gap moc thi nhay toi moc.
+    Khong lat chieu, khong ep so: moc sai ben chan/le, di nguoc chieu, trung, hoac
+    khong du so truoc moc -> ca tuyen giu so tool danh, ly do ghi vao COL_LY_DO_SO_CU.
+    """
+    if COL_SO_CU not in group.columns:
+        return group
+
+    group = group.copy()
+    group[COL_LY_DO_SO_CU] = ""
+    moc, loi = {}, {}
+
+    for idx, value in group[COL_SO_CU].items():
+        so, ly_do = doc_so_nha_cu(value, prefix)
+        if so is not None:
+            moc[idx] = so
+        elif ly_do:
+            loi[idx] = ly_do
+
+    if not moc and not loi:
+        return group
+
+    so_moi = {}
+    for ben, dau, ten_ben in ((GT_TRAI, 1, "lẻ (trái)"), (GT_PHAI, 2, "chẵn (phải)")):
+        nhom = group[(group[COL_BEN] == ben) & group[COL_SONHA].notna()]
+        thu_tu = sorted(nhom.index, key=lambda idx: (float(group.at[idx, COL_STT]), str(idx)))
+        ke_tiep, moc_truoc, chua_so = dau, None, 0
+
+        for idx in thu_tu:
+            if idx not in moc:
+                so_moi[idx] = ke_tiep
+                ke_tiep += 2
+                chua_so += 1
+                continue
+            so = moc[idx]
+            if so % 2 != dau % 2:
+                loi[idx] = f"soNhaCu {so} là số {'chẵn' if so % 2 == 0 else 'lẻ'} nhưng thửa ở bên {ten_ben}"
+            elif moc_truoc is not None and so <= moc_truoc:
+                loi[idx] = (f"soNhaCu {so} trùng mốc {moc_truoc}" if so == moc_truoc
+                            else f"soNhaCu {so} đứng sau mốc {moc_truoc}: ngược chiều đánh số")
+            elif so < ke_tiep:
+                loi[idx] = f"soNhaCu {so}: không đủ số cho {chua_so} thửa đứng trước"
+            else:
+                so_moi[idx] = so
+                ke_tiep, moc_truoc, chua_so = so + 2, so, 0
+
+    co_moc_khong_so = [idx for idx in moc if pd.isna(group.at[idx, COL_SONHA])]
+    for idx in co_moc_khong_so:
+        loi.setdefault(idx, f"soNhaCu {moc[idx]} chưa áp dụng: thửa chưa được đánh số")
+
+    if loi:
+        for idx in moc:
+            loi.setdefault(idx, "soNhaCu chưa áp dụng: tuyến có mốc lỗi")
+        for idx, ly_do in loi.items():
+            group.at[idx, COL_LY_DO_SO_CU] = ly_do
+        return group
+
+    for idx, so in so_moi.items():
+        group.at[idx, COL_SONHA] = so
+    return group
+
+
 def danh_so_lai_theo_logic_chinh(
     group,
     huong,
@@ -4513,7 +4609,8 @@ def process(houses, roads, verbose=True, reference_roads=None, alley_contexts=No
             continue
 
         if road_key in alley_contexts:
-            results.append(number_alley(group, alley_contexts[road_key]))
+            context = alley_contexts[road_key]
+            results.append(ap_dung_so_nha_cu(number_alley(group, context), context.prefix))
             continue
 
         kieu = kieu_hinh_hoc_tuyen(road.geometry)
@@ -4938,7 +5035,7 @@ def process(houses, roads, verbose=True, reference_roads=None, alley_contexts=No
             )
 
         # Append 1 lan ca group, tranh tach/ghep lai lam kho debug.
-        results.append(group)
+        results.append(ap_dung_so_nha_cu(group))
 
     if not results:
         raise ValueError("Khong co ket qua de ghep.")

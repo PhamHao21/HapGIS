@@ -24,6 +24,8 @@ from core_housenumber import (
     khoa_ten,
     ten_truong_an_toan_shp,
     xoa_shapefile_cu,
+    COL_LY_DO_SO_CU,
+    COL_SO_CU,
     COL_SONHA,
     FIELD_ROUTE,
     KIEU_LAN,
@@ -880,6 +882,16 @@ def chay_danh_so(
     ghi(f"Đã xử lý {len(out)} đối tượng.")
 
     out[COT_RA_SOAT] = danh_dau_can_ra_soat(out, all_roads, report["_hierarchical"])
+    if COL_LY_DO_SO_CU in out.columns:
+        ly_do_so_cu = out.pop(COL_LY_DO_SO_CU).fillna("").astype(str)
+        out[COT_RA_SOAT] = [
+            "; ".join(part for part in (cu, moi) if part)
+            for cu, moi in zip(out[COT_RA_SOAT], ly_do_so_cu)
+        ]
+        co_moc = int((~_o_trong(out[COL_SO_CU])).sum())
+        so_loi = int((ly_do_so_cu != "").sum())
+        ghi(f"soNhaCu: {co_moc:,} thửa có số sẵn có"
+            + (f", {so_loi:,} thửa không áp dụng được (xem {COT_RA_SOAT})." if so_loi else ", đã giữ làm mốc."))
     so_ra_soat = int((out[COT_RA_SOAT] != "").sum())
     if so_ra_soat:
         ghi(f"{so_ra_soat:,} thửa cần rà lại trên bản đồ (lọc cột {COT_RA_SOAT} khác trống).")
