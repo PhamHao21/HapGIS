@@ -86,7 +86,8 @@ canRaSoat (sau 22 trường quy định) ghi lý do thửa cần rà lại trên
   "Cách <tuyến> N m, nằm sau đầu cụt tim"   -> tim đường thiếu đoạn hoặc thửa ghi sai tenDuong;
   "Cách <tuyến> N m, không có mặt tiền"     -> thửa phía sau, số chen vào dãy mặt tiền;
   "Thửa góc, giáp cả <tuyến khác>"          -> thửa ngã tư, số theo tuyến ghi ở tenDuong;
-  "Không có đường cùng tên" / "Chưa có số nhà".
+  "Không có đường cùng tên" / "Chưa có số nhà";
+  "soNhaCu ..."                             -> số nhà có sẵn không áp dụng được (xem mục Giữ số nhà có sẵn).
 Trong ArcGIS: Select By Attributes canRaSoat <> '' để lọc các thửa này.
 
 QUY TẮC HẺM
@@ -159,6 +160,23 @@ Hẻm thông hai đường (hai đầu đều chạm đường lớn) - miệng 
        tương đương (≤ 2 lần khoảng cách + 2 m) thì bị chặn.
   Cả hai đầu cùng chạm một đường cha ghi trong tên/tenDuong cũng bị chặn.
   => Cách chắc chắn nhất: dùng trường tenHem và ghi tenDuong là đường muốn làm miệng hẻm.
+
+GIỮ SỐ NHÀ CÓ SẴN (trường soNhaCu, tùy chọn)
+- Thêm trường soNhaCu vào lớp thửa, chỉ điền cho căn đã có số nhà thật cần giữ; căn khác để trống.
+  Không có trường này hoặc để trống toàn bộ thì tool đánh số như bình thường.
+- Giá trị: số nguyên, vd 65 (đường chính); hẻm ghi 236/15 hoặc 15. Số kiểu 7A, 1B chưa hỗ trợ.
+- Cách đánh (dồn đầu): chiều đánh vẫn theo 4 hướng / miệng hẻm như trên. Mỗi bên đi từ điểm đầu,
+  căn có soNhaCu giữ nguyên số làm mốc, các căn khác nhận số kế tiếp cùng chẵn/lẻ:
+    10 căn bên lẻ, căn thứ 5 có soNhaCu = 65 -> 1, 3, 5, 7, 65, 67, 69, 71, 73, 75
+    (9 → 63 để trống). Có nhiều mốc thì làm lần lượt từng đoạn giữa hai mốc.
+- Tool không tự lật chiều và không ép số. Tuyến có mốc lỗi thì GIỮ SỐ TOOL ĐÁNH như bình thường
+  cho cả tuyến, lý do ghi vào canRaSoat:
+    "soNhaCu 64 là số chẵn nhưng thửa ở bên lẻ (trái)"     -> số cũ đánh theo chiều ngược lại;
+    "soNhaCu 21 đứng sau mốc 65: ngược chiều đánh số"        -> số cũ đánh theo chiều ngược lại;
+    "soNhaCu 3: không đủ số cho 2 thửa đứng trước"            -> số cũ sai hoặc thiếu chỗ;
+    "soNhaCu 21 trùng mốc 21" / "soNhaCu '7A' không phải số nguyên dương";
+    "soNhaCu chưa áp dụng: tuyến có mốc lỗi"                  -> mốc đúng nhưng tuyến có mốc khác lỗi.
+- Trường soNhaCu được giữ trong file kết quả để đối chiếu với soNhaHienThi.
 
 5. PHIÊN BẢN
 HAPGIS v1.2
